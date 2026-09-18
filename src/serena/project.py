@@ -21,7 +21,7 @@ from serena.ls_manager import LanguageServerFactory, LanguageServerManager
 from serena.memories.memory_manager import MemoryManager
 from serena.util.file_proxy import FileCollection, FileProxy
 from serena.util.file_system import GitignoreParser, match_path, scan_directory
-from serena.util.text_utils import MatchedConsecutiveLines, search_files
+from serena.util.text_utils import LineType, MatchedConsecutiveLines, TextLine, search_files
 from solidlsp import SolidLanguageServer
 from solidlsp.ls_config import LanguageServerIdLike
 
@@ -487,14 +487,35 @@ class Project(ToStringMixin):
 
         :return MatchedConsecutiveLines: A container with the desired lines.
         """
-        file_contents = self.read_file(relative_file_path)
-        return MatchedConsecutiveLines.from_file_contents(
-            file_contents,
-            line=line,
-            context_lines_before=context_lines_before,
-            context_lines_after=context_lines_after,
-            source_file_path=relative_file_path,
-        )
+        if line < 0:
+            # Preserve the legacy negative-index behaviour for this unusual case.
+            file_contents = self.read_file(relative_file_path)
+            return MatchedConsecutiveLines.from_file_contents(
+                file_contents,
+                line=line,
+                context_lines_before=context_lines_before,
+                context_lines_after=context_lines_after,
+                source_file_path=relative_file_path,
+            )
+
+        start_line = max(0, line - context_lines_before)
+        end_line = line + context_lines_after
+        contents = self.read_file_lines(relative_file_path, start_line, end_line)
+        target_offset = line - start_line
+        if target_offset >= len(contents):
+            raise IndexError(f"Line {line} is outside {relative_file_path}")
+
+        text_lines: list[TextLine] = []
+        for offset, content in enumerate(contents):
+            line_number = start_line + offset
+            if line_number < line:
+                match_type = LineType.BEFORE_MATCH
+            elif line_number > line:
+                match_type = LineType.AFTER_MATCH
+            else:
+                match_type = LineType.MATCH
+            text_lines.append(TextLine(line_number=line_number, line_content=content, match_type=match_type))
+        return MatchedConsecutiveLines(lines=text_lines, source_file_path=relative_file_path)
 
     def create_language_server_manager(self) -> LanguageServerManager:
         """

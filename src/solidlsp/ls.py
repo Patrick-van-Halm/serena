@@ -318,17 +318,20 @@ class DocumentSymbols:
         Iterate over all symbols in the document symbol tree.
         Yields symbols in a depth-first manner.
         """
-        if self._all_symbols is not None:
-            yield from self._all_symbols
-            return
+        if self._all_symbols is None:
+            # Materialise the flattened view once. Symbol-location/reference paths frequently
+            # scan the same cached document several times, and rebuilding the DFS generator
+            # tree for each scan adds avoidable Python recursion and allocations.
+            all_symbols: list[ls_types.UnifiedSymbolInformation] = []
+            stack = list(reversed(self.root_symbols))
+            while stack:
+                symbol = stack.pop()
+                all_symbols.append(symbol)
+                children = symbol.get("children", [])
+                stack.extend(reversed(children))
+            self._all_symbols = all_symbols
 
-        def traverse(s: ls_types.UnifiedSymbolInformation) -> Iterator[ls_types.UnifiedSymbolInformation]:
-            yield s
-            for child in s.get("children", []):
-                yield from traverse(child)
-
-        for root_symbol in self.root_symbols:
-            yield from traverse(root_symbol)
+        yield from self._all_symbols
 
     def get_all_symbols_and_roots(self) -> tuple[list[ls_types.UnifiedSymbolInformation], list[ls_types.UnifiedSymbolInformation]]:
         """
@@ -2426,9 +2429,14 @@ class SolidLanguageServer(ABC):
 
         debug_enabled = log.isEnabledFor(logging.DEBUG)
         t0_loop = perf_counter() if debug_enabled else 0.0
-        # For each reference, find the containing symbol
+        # For each reference, find the containing symbol. Cache immutable per-file
+        # helpers so repeated references in the same file do not repeatedly split the
+        # file or redo document-symbol cache/hash lookups.
         result = []
         incoming_symbol = None
+        lines_by_path: dict[str, list[str]] = {}
+        document_symbols_by_path: dict[str, DocumentSymbols] = {}
+        body_factories_by_path: dict[str, SymbolBodyFactory] = {}
         for ref in references:
             ref_path = ref["relativePath"]
             assert ref_path is not None
@@ -2436,11 +2444,24 @@ class SolidLanguageServer(ABC):
             ref_col = ref["range"]["start"]["character"]
 
             with self.open_file(ref_path) as file_data:
-                body_factory = SymbolBodyFactory(file_data)
+                if ref_path not in lines_by_path:
+                    lines_by_path[ref_path] = file_data.contents.split("\n")
+                    document_symbols_by_path[ref_path] = self.request_document_symbols(ref_path, file_buffer=file_data)
+                    if include_body:
+                        body_factories_by_path[ref_path] = SymbolBodyFactory(file_data)
+                body_factory = body_factories_by_path.get(ref_path)
 
-                # Get the containing symbol for this reference
+                # Get the containing symbol for this reference using the already-open
+                # buffer and cached per-file views.
                 containing_symbol = self.request_containing_symbol(
-                    ref_path, ref_line, ref_col, include_body=include_body, body_factory=body_factory
+                    ref_path,
+                    ref_line,
+                    ref_col,
+                    include_body=include_body,
+                    body_factory=body_factory,
+                    file_buffer=file_data,
+                    file_lines=lines_by_path[ref_path],
+                    document_symbols=document_symbols_by_path[ref_path],
                 )
                 if containing_symbol is None:
                     # TODO: HORRIBLE HACK! I don't know how to do it better for now...
@@ -2553,6 +2574,9 @@ class SolidLanguageServer(ABC):
         strict: bool = False,
         include_body: bool = False,
         body_factory: SymbolBodyFactory | None = None,
+        file_buffer: LSPFileBuffer | None = None,
+        file_lines: list[str] | None = None,
+        document_symbols: DocumentSymbols | None = None,
     ) -> ls_types.UnifiedSymbolInformation | None:
         """
         Finds the first symbol containing the position for the given file.
@@ -2581,82 +2605,78 @@ class SolidLanguageServer(ABC):
         :param include_body: Whether to include the body of the symbol in the result.
         :return: The container symbol (if found) or None.
         """
-        # checking if the line is empty, unfortunately ugly and duplicating code, but I don't want to refactor
-        with self.open_file(relative_file_path):
-            absolute_file_path = os.path.join(self.repository_root_path, relative_file_path)
-            if self._path_contains_dots(relative_file_path):
-                absolute_file_path = str(pathlib.Path(absolute_file_path).resolve())
-            content = FileUtils.read_file(absolute_file_path, self._encoding)
-            if content.split("\n")[line].strip() == "":
+        absolute_file_path = os.path.join(self.repository_root_path, relative_file_path)
+        if self._path_contains_dots(relative_file_path):
+            absolute_file_path = str(pathlib.Path(absolute_file_path).resolve())
+        normalized_uri = Path(absolute_file_path).as_uri()
+
+        with self._open_file_context(relative_file_path, file_buffer=file_buffer) as opened_file:
+            lines = file_lines if file_lines is not None else opened_file.contents.split("\n")
+            if lines[line].strip() == "":
                 log.error(f"Passing empty lines to request_container_symbol is currently not supported, {relative_file_path=}, {line=}")
                 return None
+            if document_symbols is None:
+                document_symbols = self.request_document_symbols(relative_file_path, file_buffer=opened_file)
 
-        document_symbols = self.request_document_symbols(relative_file_path)
+            def is_position_in_range(range_d: ls_types.Range) -> bool:
+                start = range_d["start"]
+                end = range_d["end"]
 
-        # make jedi and pyright api compatible
-        # the former has no location, the later has no range
-        # we will just always add location of the desired format to all symbols
-        for symbol in document_symbols.iter_symbols():
-            if "location" not in symbol:
-                range = symbol["range"]
-                location = ls_types.Location(
-                    uri=f"file:/{absolute_file_path}",
-                    range=range,
-                    absolutePath=absolute_file_path,
-                    relativePath=relative_file_path,
+                column_condition = True
+                if strict:
+                    line_condition = end["line"] >= line > start["line"]
+                    if column is not None and line == start["line"]:
+                        column_condition = column > start["character"]
+                else:
+                    line_condition = end["line"] >= line >= start["line"]
+                    if column is not None and line == start["line"]:
+                        column_condition = column >= start["character"]
+                return line_condition and column_condition
+
+            containing_symbol: ls_types.UnifiedSymbolInformation | None = None
+            best_start_line = -1
+
+            # Normalise and filter in one scan. Previously this walked the full document
+            # once to rewrite locations, again to build candidates, and a third time over
+            # the candidate list to select the winner.
+            for symbol in document_symbols.iter_symbols():
+                location = symbol.get("location")
+                if location is None:
+                    symbol_range = symbol["range"]
+                    location = ls_types.Location(
+                        uri=normalized_uri,
+                        range=symbol_range,
+                        absolutePath=absolute_file_path,
+                        relativePath=relative_file_path,
+                    )
+                    symbol["location"] = location
+                else:
+                    assert "range" in location
+                    location["absolutePath"] = absolute_file_path
+                    location["relativePath"] = relative_file_path
+                    location["uri"] = normalized_uri
+
+                symbol_range = location["range"]
+                is_multiline_container = (
+                    SymbolKind.is_container(symbol["kind"])
+                    and symbol_range["start"]["line"] != symbol_range["end"]["line"]
                 )
-                symbol["location"] = location
-            else:
-                location = symbol["location"]
-                assert "range" in location
-                location["absolutePath"] = absolute_file_path
-                location["relativePath"] = relative_file_path
-                location["uri"] = Path(absolute_file_path).as_uri()
+                is_variable_or_constant = symbol["kind"] in {ls_types.SymbolKind.Variable, ls_types.SymbolKind.Constant}
+                if not (is_multiline_container or is_variable_or_constant):
+                    continue
+                if not is_position_in_range(symbol_range):
+                    continue
 
-        def is_position_in_range(line: int, range_d: ls_types.Range) -> bool:
-            start = range_d["start"]
-            end = range_d["end"]
+                start_line = symbol_range["start"]["line"]
+                # Strictly greater preserves the old max() tie behaviour: the first
+                # symbol encountered at a given start line wins.
+                if containing_symbol is None or start_line > best_start_line:
+                    containing_symbol = symbol
+                    best_start_line = start_line
 
-            column_condition = True
-            if strict:
-                line_condition = end["line"] >= line > start["line"]
-                if column is not None and line == start["line"]:
-                    column_condition = column > start["character"]
-            else:
-                line_condition = end["line"] >= line >= start["line"]
-                if column is not None and line == start["line"]:
-                    column_condition = column >= start["character"]
-            return line_condition and column_condition
-
-        def is_multiline_container(s):
-            return SymbolKind.is_container(s["kind"]) and s["location"]["range"]["start"]["line"] != s["location"]["range"]["end"]["line"]
-
-        def is_variable_or_constant(s):
-            return s["kind"] in {ls_types.SymbolKind.Variable, ls_types.SymbolKind.Constant}
-
-        # Only consider containers that are not one-liners (otherwise we may get imports)
-        # variables and constants are admitted even as one-liners (e.g. members of a Go const group)
-        candidate_containers = [s for s in document_symbols.iter_symbols() if is_multiline_container(s) or is_variable_or_constant(s)]
-
-        if not candidate_containers:
-            return None
-
-        # From the candidates, find those whose range contains the given position.
-        containing_symbols = []
-        for symbol in candidate_containers:
-            s_range = symbol["location"]["range"]
-            if not is_position_in_range(line, s_range):
-                continue
-            containing_symbols.append(symbol)
-
-        if containing_symbols:
-            # Return the one with the greatest starting position (i.e. the innermost container).
-            containing_symbol = max(containing_symbols, key=lambda s: s["location"]["range"]["start"]["line"])
-            if include_body:
+            if containing_symbol is not None and include_body:
                 containing_symbol["body"] = self.create_symbol_body(containing_symbol, factory=body_factory)
             return containing_symbol
-        else:
-            return None
 
     def request_container_of_symbol(
         self, symbol: ls_types.UnifiedSymbolInformation, include_body: bool = False

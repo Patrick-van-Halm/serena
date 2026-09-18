@@ -200,6 +200,18 @@ class NamePathMatcher(ToStringMixin):
     def matches_ls_symbol(self, symbol: "LanguageServerSymbol") -> bool:
         return self.matches_reversed_components(symbol.iter_name_path_components_reversed())
 
+    def matches_components(self, components: Sequence[NamePathComponent]) -> bool:
+        """Match a root-to-leaf name path without constructing/re-walking ancestor wrappers."""
+        if len(components) < len(self._components):
+            return False
+
+        for i, pattern_component in enumerate(reversed(self._components), start=1):
+            symbol_component = components[-i]
+            use_substring_matching = self._substring_matching and i == 1
+            if not pattern_component.matches(symbol_component, use_substring_matching):
+                return False
+        return not self._is_absolute_pattern or len(components) == len(self._components)
+
     def matches_reversed_components(self, components_reversed: Iterator[NamePathComponent]) -> bool:
         for i, pattern_component in enumerate(reversed(self._components)):
             try:
@@ -351,8 +363,14 @@ class LanguageServerSymbol(Symbol, ToStringMixin):
         Get the name path of the symbol, e.g. "class/method/inner_function" or
         "class/method[1]" (overloaded method with identifying index).
         """
-        name_path = NAME_PATH_SEP.join(reversed([str(x) for x in self.iter_name_path_components_reversed()]))
-        return name_path
+        # Walk raw parent links directly. Creating a LanguageServerSymbol wrapper for every
+        # ancestor is measurable on large symbol trees and is unnecessary for path rendering.
+        components = [NamePathComponent(self.name, self.overload_idx)]
+        parent_root = self.symbol_root.get("parent")
+        while parent_root is not None and parent_root["kind"] != SymbolKind.File:
+            components.append(NamePathComponent(parent_root["name"], parent_root.get("overload_idx")))
+            parent_root = parent_root.get("parent")
+        return NAME_PATH_SEP.join(str(component) for component in reversed(components))
 
     def iter_name_path_components_reversed(self) -> Iterator[NamePathComponent]:
         yield NamePathComponent(self.name, self.overload_idx)
@@ -400,23 +418,45 @@ class LanguageServerSymbol(Symbol, ToStringMixin):
             If provided, only symbols of the given kinds will be included in the result.
         :param exclude_kinds: If provided, symbols of the given kinds will be excluded from the result.
         """
-        result = []
+        result: list[Self] = []
         name_path_matcher = NamePathMatcher(name_path_pattern, substring_matching)
 
-        def should_include(s: "LanguageServerSymbol") -> bool:
-            if include_kinds is not None and s.symbol_kind not in include_kinds:
-                return False
-            if exclude_kinds is not None and s.symbol_kind in exclude_kinds:
-                return False
-            return name_path_matcher.matches_ls_symbol(s)
+        # If find() starts below a file root, seed the path with the ancestors that
+        # are part of the source-file name path. This is done once rather than once
+        # per visited descendant.
+        ancestor_components_reversed: list[NamePathComponent] = []
+        parent_root = self.symbol_root.get("parent")
+        while parent_root is not None and parent_root["kind"] != SymbolKind.File:
+            ancestor_components_reversed.append(NamePathComponent(parent_root["name"], parent_root.get("overload_idx")))
+            parent_root = parent_root.get("parent")
+        path_components = list(reversed(ancestor_components_reversed))
 
-        def traverse(s: "LanguageServerSymbol") -> None:
-            if should_include(s):
-                result.append(s)
-            for c in s.iter_children():
-                traverse(c)
+        def traverse(symbol_root: UnifiedSymbolInformation, components: list[NamePathComponent]) -> None:
+            component = NamePathComponent(symbol_root["name"], symbol_root.get("overload_idx"))
+            components.append(component)
+            symbol_kind = symbol_root["kind"]
 
-        traverse(self)
+            include = True
+            if include_kinds is not None and symbol_kind not in include_kinds:
+                include = False
+            if exclude_kinds is not None and symbol_kind in exclude_kinds:
+                include = False
+            if include and name_path_matcher.matches_components(components):
+                # Only create wrapper objects for actual matches.
+                result.append(self.__class__(symbol_root))
+
+            children = symbol_root.get("children", [])
+            if symbol_kind == SymbolKind.File:
+                # Name paths of symbols inside a file are relative to that file; package
+                # and file components are deliberately excluded.
+                for child in children:
+                    traverse(child, [])
+            else:
+                for child in children:
+                    traverse(child, components)
+            components.pop()
+
+        traverse(self.symbol_root, path_components)
         return result
 
     class OutputDict(TypedDict):
@@ -682,27 +722,33 @@ class LanguageServerSymbolRetriever:
         for file_path, file_symbols in symbols_by_file.items():
             t0_file = perf_counter() if debug_enabled else 0.0
             file_hover_lookups = 0
+            hover_cache: dict[tuple[int, int], str | None] = {}
 
             ls = self.get_language_server(file_path)
             with ls.open_file(file_path) as file_buffer:
                 for sym in file_symbols:
-                    # Check budget before starting a new hover request
-                    # symbol_info_budget_seconds=0 disables the budget mechanism (the first inequality)
-                    if 0 < symbol_info_budget_seconds <= hover_spent_seconds:
+                    line = sym.line
+                    column = sym.column
+                    assert line is not None and column is not None  # filtered above
+                    hover_key = (line, column)
+
+                    if hover_key in hover_cache:
+                        info = hover_cache[hover_key]
+                        hover_cache_hits += 1
+                    # Check budget only for a new hover request. A cached result is free and
+                    # remains usable even if earlier requests exhausted the budget.
+                    elif 0 < symbol_info_budget_seconds <= hover_spent_seconds:
                         skipped_due_to_budget += 1
                         info = None
-                        # log once when budget exceeded
                         if skipped_due_to_budget == 1:
                             log.debug("Skipping further hover operations due to budget exceeded")
                     else:
-                        line = sym.line
-                        column = sym.column
-                        assert line is not None and column is not None  # for mypy, we filtered invalid symbols above
                         t0_hover = perf_counter()
                         info = self._request_info(file_path, line, column, file_buffer=file_buffer)
                         hover_spent_seconds += perf_counter() - t0_hover
                         file_hover_lookups += 1
                         total_hover_lookups += 1
+                        hover_cache[hover_key] = info
 
                     info_by_symbol[sym] = info
 
@@ -804,9 +850,17 @@ class LanguageServerSymbolRetriever:
         lang_server = self.get_language_server(location.relative_path)
         document_symbols = lang_server.request_document_symbols(location.relative_path)
         for symbol_dict in document_symbols.iter_symbols():
-            symbol = LanguageServerSymbol(symbol_dict)
-            if symbol.location == location:
-                return symbol
+            raw_location = symbol_dict.get("location")
+            relative_path = raw_location.get("relativePath") if raw_location is not None else None
+            if relative_path is not None:
+                relative_path = relative_path.replace("/", os.path.sep)
+            selection_start = symbol_dict.get("selectionRange", {}).get("start", {})
+            if (
+                relative_path == location.relative_path
+                and selection_start.get("line") == location.line
+                and selection_start.get("character") == location.column
+            ):
+                return LanguageServerSymbol(symbol_dict)
         return None
 
     def find_referencing_symbols(

@@ -83,9 +83,12 @@ class TestSymbolNameMatching:
     def test_match_simple_name(self, name_path_pattern, symbol_name_path_parts, is_substring_match, expected):
         """Tests matching for simple names (no '/' in pattern)."""
         symbol_name_path_components = [NamePathComponent(part) for part in symbol_name_path_parts]
-        result = NamePathMatcher(name_path_pattern, is_substring_match).matches_reversed_components(reversed(symbol_name_path_components))
+        matcher = NamePathMatcher(name_path_pattern, is_substring_match)
+        result = matcher.matches_reversed_components(reversed(symbol_name_path_components))
+        direct_result = matcher.matches_components(symbol_name_path_components)
         error_msg = self._create_assertion_error_message(name_path_pattern, symbol_name_path_parts, is_substring_match, expected, result)
         assert result == expected, error_msg
+        assert direct_result == expected, error_msg
 
     @pytest.mark.parametrize(
         "name_path_pattern, symbol_name_path_parts, is_substring_match, expected",
@@ -171,9 +174,12 @@ class TestSymbolNameMatching:
     def test_match_name_path_pattern_path_len_2(self, name_path_pattern, symbol_name_path_parts, is_substring_match, expected):
         """Tests matching for qualified names (e.g. 'module/class/func')."""
         symbol_name_path_components = [NamePathComponent(part) for part in symbol_name_path_parts]
-        result = NamePathMatcher(name_path_pattern, is_substring_match).matches_reversed_components(reversed(symbol_name_path_components))
+        matcher = NamePathMatcher(name_path_pattern, is_substring_match)
+        result = matcher.matches_reversed_components(reversed(symbol_name_path_components))
+        direct_result = matcher.matches_components(symbol_name_path_components)
         error_msg = self._create_assertion_error_message(name_path_pattern, symbol_name_path_parts, is_substring_match, expected, result)
         assert result == expected, error_msg
+        assert direct_result == expected, error_msg
 
     @pytest.mark.parametrize(
         "name_path_pattern, symbol_name_path_components, expected",
@@ -229,8 +235,26 @@ class TestSymbolNameMatching:
         """Tests matching for qualified names (e.g. 'module/class/func')."""
         matcher = NamePathMatcher(name_path_pattern, False)
         result = matcher.matches_reversed_components(reversed(symbol_name_path_components))
+        direct_result = matcher.matches_components(symbol_name_path_components)
         error_msg = self._create_assertion_error_message(name_path_pattern, symbol_name_path_components, False, expected, result)
         assert result == expected, error_msg
+        assert direct_result == expected, error_msg
+
+
+def test_find_name_paths_reset_below_file_symbol() -> None:
+    package = {"name": "pkg", "kind": 4, "children": [], "parent": None}
+    file_symbol = {"name": "module", "kind": 1, "children": [], "parent": package}
+    cls = {"name": "Service", "kind": 5, "children": [], "parent": file_symbol}
+    method = {"name": "run", "kind": 6, "children": [], "parent": cls}
+    package["children"] = [file_symbol]
+    file_symbol["children"] = [cls]
+    cls["children"] = [method]
+
+    root = LanguageServerSymbol(package)
+    matches = root.find("Service/run")
+    assert [m.get_name_path() for m in matches] == ["Service/run"]
+    assert [m.get_name_path() for m in root.find("/Service/run")] == ["Service/run"]
+    assert root.find("/pkg/module/Service/run") == []
 
 
 @pytest.mark.python
@@ -308,6 +332,29 @@ class TestHoverBudget:
         assert call_count == 3
         assert all(info is not None for info in result.values())
         assert len(result) == 3
+
+    @pytest.mark.parametrize("project_with_ls", PYTHON_BACKEND_LANGUAGES, indirect=True)
+    def test_duplicate_locations_share_one_hover_lookup(self, project_with_ls: Project, monkeypatch: pytest.MonkeyPatch):
+        project_with_ls.serena_config.symbol_info_budget = 10.0
+        project_with_ls.project_config.symbol_info_budget = 10.0
+        symbol_retriever = LanguageServerSymbolRetriever(project_with_ls)
+        call_count = 0
+
+        def counting_request_info(file_path, line, column, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return f"info:{line}:{column}"
+
+        monkeypatch.setattr(symbol_retriever, "_request_info", counting_request_info)
+        symbols = _make_mock_symbols(3)
+        for symbol in symbols:
+            symbol.line = 10
+            symbol.column = 4
+
+        result = symbol_retriever.request_info_for_symbol_batch(symbols)
+
+        assert call_count == 1
+        assert list(result.values()) == ["info:10:4"] * 3
 
     @pytest.mark.parametrize("project_with_ls", PYTHON_BACKEND_LANGUAGES, indirect=True)
     def test_budget_exceeded_partial_info(self, project_with_ls: Project, monkeypatch: pytest.MonkeyPatch):
