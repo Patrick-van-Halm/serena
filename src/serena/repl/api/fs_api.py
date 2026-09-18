@@ -20,6 +20,7 @@ from serena.tools import (
     ReadFileTool,
     SearchForPatternTool,
 )
+from serena.util.file_proxy import FileProxy
 from serena.util.file_system import scan_directory
 from serena.util.text_utils import MatchedConsecutiveLines
 
@@ -190,6 +191,8 @@ class FsApi(FacadeApi):
 
     def _resolve_fs_path(self, path: str) -> Path:
         """Validate a path against the active-project boundary and return an absolute lexical path."""
+        if FileProxy.is_external_path(path):
+            raise ValueError("Encoded JetBrains external paths are not supported by raw filesystem operations.")
         project = self._get_project()
         project.validate_relative_path(path)
         return Path(os.path.abspath(os.path.join(project.project_root, path)))
@@ -357,9 +360,9 @@ class FsApi(FacadeApi):
         """
         project = self._get_project()
         source = self._resolve_fs_path(source_path)
-        destination = self._resolve_fs_path(destination_path)
         if self._is_project_root(source):
             raise ValueError("Refusing to move the active project root.")
+        destination = self._resolve_fs_path(destination_path)
         if not self._path_exists(source):
             raise FileNotFoundError(f"Source path not found: {source_path}")
 
