@@ -179,6 +179,14 @@ class Project(ToStringMixin):
         """
         return FileProxy.from_project_relative_path(self, relative_path).get_contents()
 
+    def read_file_lines(self, relative_path: str, start_line: int = 0, end_line: int | None = None) -> list[str]:
+        """Reads a range of LSP lines from a project file.
+
+        Local files can stream bounded ranges without materialising the whole file; external
+        proxies transparently fall back to slicing their full contents.
+        """
+        return FileProxy.from_project_relative_path(self, relative_path).get_lines(start_line, end_line)
+
     @property
     def _ignore_spec(self) -> pathspec.PathSpec:
         """

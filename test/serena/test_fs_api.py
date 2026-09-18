@@ -11,6 +11,7 @@ from serena.config.serena_config import SerenaConfig
 from serena.project import Project
 from serena.repl.api.fs_api import FsApi
 from serena.repl.facade import ApiScope, Facade
+from serena.util.file_proxy import LocalProjectFileProxy
 
 
 @pytest.fixture
@@ -44,6 +45,22 @@ def test_read_file(api: FsApi) -> None:
 
     assert api.read_file("src/a.py", start_line=1, end_line=1).text == "y = foo(2)"
     assert api.read_file("src/a.py", start_line=-2).lines == ["z = 3", ""]
+
+
+def test_bounded_read_uses_streaming_local_path(api: FsApi, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_full_read(self: LocalProjectFileProxy) -> str:
+        pytest.fail("bounded local read unexpectedly materialised the whole file")
+
+    monkeypatch.setattr(LocalProjectFileProxy, "get_contents", fail_full_read)
+    assert api.read_file("src/a.py", start_line=1, end_line=1).lines == ["y = foo(2)"]
+
+
+def test_bounded_read_preserves_lsp_line_break_semantics(api: FsApi, project: Project) -> None:
+    path = Path(project.project_root) / "mixed.txt"
+    path.write_text("zero\r\none\rtwo\n\x0cthree\r\n", encoding="utf-8", newline="")
+
+    assert api.read_file("mixed.txt", start_line=0, end_line=4).lines == ["zero", "one", "two", "\x0cthree", ""]
+    assert api.read_file("mixed.txt", start_line=1, end_line=2).lines == ["one", "two"]
 
 
 def test_create_text_file(api: FsApi, project: Project) -> None:

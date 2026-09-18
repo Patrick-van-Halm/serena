@@ -21,6 +21,10 @@ class TestTextUtils:
         for i, ending in enumerate(["\n", "\r\n", "\r", ""]):
             assert lines[i][len(self.LINE) :] == ending
 
+    @pytest.mark.parametrize("separator", ["\x0b", "\x0c", "\x1c", "\x85", "\u2028", "\u2029"])
+    def test_split_lines_ignores_non_lsp_line_separators(self, separator: str):
+        assert TextUtils.split_lines(f"a{separator}b\nc") == [f"a{separator}b", "c"]
+
     def test_line_col_from_idx(self):
         assert TextUtils.get_line_col_from_index(self.LINE, 0) == (0, 0)
         assert TextUtils.get_line_col_from_index(self.LINE, 1) == (0, 1)

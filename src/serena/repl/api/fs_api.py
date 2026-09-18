@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 from serena.tools import CreateTextFileTool, FindFileTool, ListDirTool, ReadFileTool, SearchForPatternTool
 from serena.util.file_system import scan_directory
 from serena.util.text_utils import MatchedConsecutiveLines
-from solidlsp.ls_utils import TextUtils
 
 from ..facade import FacadeApi, ReferencedType, facade_method
 from ..representable import Renderer, RepresentableViaRenderer
@@ -192,9 +191,9 @@ class FsApi(FacadeApi):
         project = self._get_project()
         project.validate_relative_path(relative_path)
 
-        # read lines, using the same (LSP-compliant) notion of line breaks as the line-based editing operations
-        lines = TextUtils.split_lines(project.read_file(relative_path))
-        lines = lines[start_line:] if end_line is None else lines[start_line : end_line + 1]
+        # Read only the requested range where the backing file supports it, using the same
+        # LSP-compliant notion of line breaks as the line-based editing operations.
+        lines = project.read_file_lines(relative_path, start_line, end_line)
         return FileContent(lines, FileContentRenderer(self._agent, max_answer_chars))
 
     @facade_method(can_edit=True, corresponding_tool=CreateTextFileTool)

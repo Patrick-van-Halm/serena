@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Self
 
 from serena.jetbrains import jetbrains_types as jb
+from solidlsp.ls_utils import TextUtils
 
 if TYPE_CHECKING:
     from serena.project import Project
@@ -18,6 +19,15 @@ class FileProxy(ABC):
     @abstractmethod
     def get_contents(self) -> str:
         """:return: the contents of the file as a string."""
+
+    def get_lines(self, start_line: int = 0, end_line: int | None = None) -> list[str]:
+        """Return a slice of the file's LSP lines.
+
+        The default implementation materialises the contents and is used for proxies whose
+        backing store is not a local file (for example JetBrains external paths).
+        """
+        lines = TextUtils.split_lines(self.get_contents())
+        return lines[start_line:] if end_line is None else lines[start_line : end_line + 1]
 
     @abstractmethod
     def get_relative_path(self) -> str:
@@ -54,6 +64,42 @@ class LocalProjectFileProxy(FileProxy):
         abs_path = os.path.join(self._project.project_root, self._relative_path)
         with open(abs_path, encoding=self._project.project_config.encoding) as f:
             return f.read()
+
+    def get_lines(self, start_line: int = 0, end_line: int | None = None) -> list[str]:
+        # A bounded, non-negative range is the common agent read pattern. Stream only as
+        # far as the requested end line instead of materialising and splitting the whole
+        # file. Full reads and negative slicing still use the C-accelerated split path.
+        if start_line < 0 or end_line is None or end_line < 0:
+            return super().get_lines(start_line, end_line)
+        if end_line < start_line:
+            return []
+
+        abs_path = os.path.join(self._project.project_root, self._relative_path)
+        result: list[str] = []
+        line_no = 0
+        last_had_newline = False
+        reached_eof = True
+        with open(abs_path, encoding=self._project.project_config.encoding) as f:
+            for raw_line in f:
+                # Text-mode universal-newline handling normalises LF, CRLF and bare CR to
+                # LF, exactly matching the LSP line-break set used by TextUtils.
+                last_had_newline = raw_line.endswith("\n")
+                if line_no >= start_line:
+                    result.append(raw_line[:-1] if last_had_newline else raw_line)
+                line_no += 1
+                if line_no > end_line:
+                    reached_eof = False
+                    break
+
+        if reached_eof:
+            # TextUtils.split_lines("") == [""] and a trailing line break creates one
+            # final empty logical line. Preserve both behaviours for bounded reads.
+            if line_no == 0:
+                if start_line == 0 <= end_line:
+                    result.append("")
+            elif last_had_newline and start_line <= line_no <= end_line:
+                result.append("")
+        return result
 
     def get_relative_path(self) -> str:
         return self._relative_path

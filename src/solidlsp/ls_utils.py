@@ -332,8 +332,15 @@ class TextUtils:
         """
         Splits the given text into lines, optionally including the newline character(s) at the end of each line.
         """
+        if not with_ends:
+            # Only LF, CRLF and bare CR are line breaks in the LSP. Normalise those three
+            # sequences in C and split once, rather than walking the text line-by-line in Python.
+            # str.splitlines() is deliberately not used: it also splits form feed, NEL and
+            # Unicode line/paragraph separators, which would shift LSP line numbers.
+            return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
         text_stepper = TextStepper(text)
-        return text_stepper.process_all_gather_lines(with_ends=with_ends)
+        return text_stepper.process_all_gather_lines(with_ends=True)
 
 
 class PathUtils:
