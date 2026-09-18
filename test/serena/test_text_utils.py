@@ -631,6 +631,25 @@ class TestMultiFileContentReplacer:
         updated_all = replacer.apply_to_content(content, occurrences)
         assert updated_all == "import new_pkg\n\nvalue = new_pkg.compute()\n"
 
+    def test_apply_to_content_is_order_independent(self):
+        replacer = MultiFileContentReplacer(mode="literal")
+        path, content = self.FILES[0]
+        occurrences = [o for o in replacer.find_occurrences(self.FILES, "old_pkg", "new_pkg") if o.relative_path == path]
+        assert replacer.apply_to_content(content, list(reversed(occurrences))) == (
+            "import new_pkg\n\nvalue = new_pkg.compute()\n"
+        )
+
+    def test_many_occurrences_have_correct_incremental_line_numbers(self):
+        replacer = MultiFileContentReplacer(mode="literal")
+        content = "".join(f"line {i}: old_pkg\n" for i in range(2000))
+        occurrences = replacer.find_occurrences([("many.txt", content)], "old_pkg", "new_pkg")
+
+        assert len(occurrences) == 2000
+        assert [occurrences[i].start_line for i in (0, 1, 999, 1999)] == [0, 1, 999, 1999]
+        updated = replacer.apply_to_content(content, occurrences)
+        assert "old_pkg" not in updated
+        assert updated.count("new_pkg") == 2000
+
     def test_ambiguous_multiline_match_is_flagged(self):
         replacer = MultiFileContentReplacer(mode="regex")
         files = [("f.txt", "start A\nstart B\nend\n")]

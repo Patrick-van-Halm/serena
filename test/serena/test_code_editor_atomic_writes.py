@@ -115,6 +115,22 @@ class TestSourceFileSaveIsAtomic:
         assert source.read_text(encoding="utf-8") == "new\n"
         assert list(tmp_path.iterdir()) == [source]
 
+    def test_unchanged_edit_context_skips_atomic_rewrite(self, tmp_path, monkeypatch):
+        source = tmp_path / "module.py"
+        source.write_text("same\n", encoding="utf-8")
+        editor = self._editor(tmp_path)
+        writes: list[tuple[str, str]] = []
+
+        def record_write(path: str, content: str, **kwargs: Any) -> None:
+            writes.append((path, content))
+
+        monkeypatch.setattr("serena.code_editor.write_file_atomic", record_write)
+        with editor.edited_file_context("module.py") as edited:
+            edited.set_contents("same\n")
+
+        assert writes == []
+        assert source.read_text(encoding="utf-8") == "same\n"
+
     def test_save_into_a_subdirectory(self, tmp_path):
         """Every other test writes at the project root; the relative path is joined and resolved,
         so a nested file has to work the same way.

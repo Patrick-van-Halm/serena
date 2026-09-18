@@ -565,7 +565,17 @@ class MultiFileContentReplacer:
         pattern = self._compile(needle)
         occurrences: list[ReplacementOccurrence] = []
         for relative_path, content in files:
+            # Matches are yielded in position order and never overlap. Keep a running line
+            # count so each match scans only the text since the preceding match, rather than
+            # recounting every newline from the start of the file.
+            line_cursor = 0
+            line_at_cursor = 0
             for index_in_file, match in enumerate(pattern.finditer(content)):
+                start = match.start()
+                end = match.end()
+                start_line = line_at_cursor + content.count("\n", line_cursor, start)
+                end_line = start_line + content.count("\n", start, end)
+
                 matched_text = match.group(0)
                 replacement = self._expand_backreferences(match, repl) if self.mode == "regex" else repl
                 # same over-match heuristic as ContentReplacer: for a multi-line match, the pattern
@@ -577,15 +587,17 @@ class MultiFileContentReplacer:
                         occurrence_id=self.make_occurrence_id(relative_path, index_in_file, matched_text),
                         relative_path=relative_path,
                         index_in_file=index_in_file,
-                        start=match.start(),
-                        end=match.end(),
+                        start=start,
+                        end=end,
                         matched_text=matched_text,
                         replacement=replacement,
-                        start_line=content.count("\n", 0, match.start()),
-                        end_line=content.count("\n", 0, match.end()),
+                        start_line=start_line,
+                        end_line=end_line,
                         is_ambiguous=is_ambiguous,
                     )
                 )
+                line_cursor = end
+                line_at_cursor = end_line
         return occurrences
 
     @staticmethod
@@ -594,12 +606,24 @@ class MultiFileContentReplacer:
         Applies the given occurrences (which must have been derived from exactly this content)
         and returns the updated content.
         """
-        for occ in sorted(occurrences, key=lambda o: o.start, reverse=True):
+        if not occurrences:
+            return content
+
+        # Build the result once. Repeatedly splicing the whole string for each occurrence
+        # makes bulk replacements quadratic in practice because every splice copies the
+        # surrounding file again.
+        parts: list[str] = []
+        cursor = 0
+        for occ in sorted(occurrences, key=lambda o: o.start):
+            assert occ.start >= cursor, f"Overlapping occurrence {occ.occurrence_id}"
             assert content[occ.start : occ.end] == occ.matched_text, (
                 f"Occurrence {occ.occurrence_id} does not match the content it is being applied to"
             )
-            content = content[: occ.start] + occ.replacement + content[occ.end :]
-        return content
+            parts.append(content[cursor : occ.start])
+            parts.append(occ.replacement)
+            cursor = occ.end
+        parts.append(content[cursor:])
+        return "".join(parts)
 
     @staticmethod
     def _format_block(block: str, prefix: str, max_lines: int, max_line_chars: int) -> list[str]:

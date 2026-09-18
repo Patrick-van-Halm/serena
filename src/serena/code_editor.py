@@ -86,9 +86,12 @@ class CodeEditor(Generic[TSymbol], ABC):
         if FileProxy.is_external_path(relative_path):
             raise ValueError(f"Cannot edit external file: {relative_path}")
         with self._open_file_context(relative_path) as edited_file:
+            original_contents = edited_file.get_contents()
             yield edited_file
-            # save the file
-            self._save_edited_file(edited_file)
+            # Avoid an atomic temp-file write, rename and downstream file-watcher work when
+            # an edit operation produces no net content change.
+            if edited_file.get_contents() != original_contents:
+                self._save_edited_file(edited_file)
 
     def _save_edited_file(self, edited_file: "CodeEditor.EditedFile") -> None:
         abs_path = os.path.join(self.project_root, edited_file.relative_path)
