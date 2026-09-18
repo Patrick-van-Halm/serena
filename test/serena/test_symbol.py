@@ -260,6 +260,21 @@ def test_find_name_paths_reset_below_file_symbol() -> None:
 @pytest.mark.python
 class TestLanguageServerSymbolRetriever:
     @pytest.mark.parametrize("project_with_ls", PYTHON_BACKEND_LANGUAGES, indirect=True)
+    def test_find_uses_document_symbols_without_full_project_tree(
+        self, project_with_ls: Project, monkeypatch: pytest.MonkeyPatch
+    ):
+        symbol_retriever = LanguageServerSymbolRetriever(project_with_ls)
+        for language_server in project_with_ls.get_language_server_manager_or_raise().iter_language_servers():
+            monkeypatch.setattr(
+                language_server,
+                "request_full_symbol_tree",
+                lambda *args, **kwargs: pytest.fail("find() rebuilt the full synthetic symbol tree"),
+            )
+
+        matches = symbol_retriever.find("UserService")
+        assert any(symbol.name == "UserService" for symbol in matches)
+
+    @pytest.mark.parametrize("project_with_ls", PYTHON_BACKEND_LANGUAGES, indirect=True)
     def test_request_info(self, project_with_ls: Project):
         symbol_retriever = LanguageServerSymbolRetriever(project_with_ls)
         create_user_method_symbol = symbol_retriever.find("UserService/create_user", within_relative_path="test_repo/services.py")[0]

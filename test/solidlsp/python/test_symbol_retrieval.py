@@ -13,10 +13,30 @@ import pytest
 from serena.symbol import LanguageServerSymbol
 from serena.util.text_utils import find_text_coordinates
 from solidlsp import SolidLanguageServer
+from solidlsp.ls import SymbolBodyFactory
 from solidlsp.ls_types import SymbolKind
 from test.solidlsp.conftest import PYTHON_BACKEND_LANGUAGES
 
 pytestmark = pytest.mark.python
+
+
+def test_symbol_body_factory_defers_line_split() -> None:
+    class Buffer:
+        contents = "zero\none\ntwo"
+
+        def split_lines(self):
+            pytest.fail("SymbolBodyFactory eagerly split the file")
+
+    symbol = {
+        "location": {
+            "range": {
+                "start": {"line": 1, "character": 0},
+                "end": {"line": 1, "character": 3},
+            }
+        }
+    }
+    body = SymbolBodyFactory(Buffer()).create_symbol_body(symbol)
+    assert body.get_text() == "one"
 
 
 class TestLanguageServerSymbols:

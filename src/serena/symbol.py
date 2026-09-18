@@ -793,21 +793,27 @@ class LanguageServerSymbolRetriever:
         optionally limited to a specific file and filtered by kind.
         """
         symbols: list[LanguageServerSymbol] = []
+
+        # find_symbol name paths are defined within source files. Building a synthetic
+        # package/file symbol tree for every query therefore adds directory traversal,
+        # wrapper construction and parent-link work that does not contribute to matching
+        # ordinary code symbols. Enumerate source files once, use the best LS for each file,
+        # and search its cached document-symbol roots directly.
         if within_relative_path and os.path.isfile(os.path.join(self.project.project_root, within_relative_path)):
-            """
-            For a specific file, use get_language_server to select the best LS for the file type
-            (consistent with get_symbol_overview). This ensures e.g. PHP files are served by the
-            PHP language server rather than being rejected by all LSes via is_ignored_path.
-            """
-            lang_servers: Iterable[SolidLanguageServer] = [self._ls_manager.get_language_server(within_relative_path)]
+            relative_files = [within_relative_path]
         else:
-            lang_servers = self._ls_manager.iter_language_servers()
-        for lang_server in lang_servers:
-            symbol_roots = lang_server.request_full_symbol_tree(within_relative_path=within_relative_path)
-            for root in symbol_roots:
+            relative_files = self.project.gather_source_files(relative_path=within_relative_path or "")
+
+        for relative_file in relative_files:
+            lang_server = self._ls_manager.get_language_server(relative_file)
+            document_symbols = lang_server.request_document_symbols(relative_file)
+            for root in document_symbols.root_symbols:
                 symbols.extend(
                     LanguageServerSymbol(root).find(
-                        name_path_pattern, include_kinds=include_kinds, exclude_kinds=exclude_kinds, substring_matching=substring_matching
+                        name_path_pattern,
+                        include_kinds=include_kinds,
+                        exclude_kinds=exclude_kinds,
+                        substring_matching=substring_matching,
                     )
                 )
         return symbols

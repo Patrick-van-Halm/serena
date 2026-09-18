@@ -10,7 +10,7 @@ import shutil
 import threading
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Callable, Hashable, Iterator
+from collections.abc import Callable, Hashable, Iterator, Sequence
 from contextlib import ExitStack, contextmanager
 from copy import copy
 from dataclasses import dataclass
@@ -223,6 +223,27 @@ class LSPFileBuffer:
         return self.contents.split("\n")
 
 
+class _LazyTextLines(Sequence[str]):
+    """Shared lazy line buffer for symbol bodies from one source file."""
+
+    def __init__(self, content: str) -> None:
+        self._content = content
+        self._lines: list[str] | None = None
+
+    def _get_lines(self) -> list[str]:
+        if self._lines is None:
+            self._lines = self._content.split("\n")
+            # Once materialized, release the duplicate contiguous source buffer.
+            self._content = ""
+        return self._lines
+
+    def __len__(self) -> int:
+        return len(self._get_lines())
+
+    def __getitem__(self, index: int | slice) -> str | list[str]:
+        return self._get_lines()[index]
+
+
 class SymbolBody(ToStringMixin):
     """
     Representation of the body of a symbol, which allows the extraction of the symbol's text
@@ -233,7 +254,7 @@ class SymbolBody(ToStringMixin):
     i.e. a core representation of only about 40 bytes per body.
     """
 
-    def __init__(self, lines: list[str], start_line: int, start_col: int, end_line: int, end_col: int) -> None:
+    def __init__(self, lines: Sequence[str], start_line: int, start_col: int, end_line: int, end_col: int) -> None:
         self._lines = lines
         self._start_line = start_line
         self._start_col = start_col
@@ -288,7 +309,9 @@ class SymbolBodyFactory:
     """
 
     def __init__(self, file_buffer: LSPFileBuffer):
-        self._lines = file_buffer.split_lines()
+        # Most symbol queries only need names, kinds and locations. Keep the source as
+        # one shared string and split it only if a caller actually asks for a body.
+        self._lines = _LazyTextLines(file_buffer.contents)
 
     def create_symbol_body(self, symbol: UnifiedSymbolInformation) -> SymbolBody:
         existing_body = symbol.get("body", None)
