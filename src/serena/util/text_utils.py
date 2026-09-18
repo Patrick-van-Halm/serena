@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import re
+from bisect import bisect_right
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -123,6 +124,34 @@ class MatchedConsecutiveLines:
         return cls(lines=text_lines, source_file_path=source_file_path)
 
 
+_LSP_NEWLINE_RE = re.compile(r"\r\n|\r|\n")
+
+
+class _TextLineIndex:
+    """Compact line-start index for repeated position-to-line lookups in one string."""
+
+    def __init__(self, content: str) -> None:
+        self._content = content
+        self._line_starts = [0]
+        self._line_starts.extend(match.end() for match in _LSP_NEWLINE_RE.finditer(content))
+
+    def line_col(self, index: int) -> tuple[int, int]:
+        if index < 0 or index > len(self._content):
+            raise ValueError(f"index out of range: {index}")
+
+        # Preserve TextUtils' LSP edge case: an index pointing at the LF inside a
+        # CRLF sequence maps to the beginning of the following line.
+        if 0 < index < len(self._content) and self._content[index] == "\n" and self._content[index - 1] == "\r":
+            line = bisect_right(self._line_starts, index) - 1
+            return line + 1, 0
+
+        line = bisect_right(self._line_starts, index) - 1
+        return line, index - self._line_starts[line]
+
+    def line(self, index: int) -> int:
+        return self.line_col(index)[0]
+
+
 def search_text(
     pattern: str,
     content: str | None = None,
@@ -154,6 +183,7 @@ def search_text(
     matches = []
     lines = TextUtils.split_lines(content)
     total_lines = len(lines)
+    line_index = _TextLineIndex(content)
 
     # For multiline matches, optionally use DOTALL so '.' matches newlines
     flags = (re.MULTILINE | re.DOTALL) if multiline else 0
@@ -163,10 +193,11 @@ def search_text(
         start_pos = match.start()
         end_pos = match.end()
 
-        # Find the line numbers for the start and end positions
-        start_line_num = TextUtils.get_line_from_index(content, start_pos)
-        end_line_num = TextUtils.get_line_from_index(content, end_pos)
-        if end_line_num > start_line_num and TextUtils.get_line_col_from_index(content, end_pos)[1] == 0:
+        # Map all matches through one precomputed line index instead of rescanning the
+        # text from the beginning for every start/end position.
+        start_line_num = line_index.line(start_pos)
+        end_line_num, end_col = line_index.line_col(end_pos)
+        if end_line_num > start_line_num and end_col == 0:
             # `end_pos` is exclusive, so if it is at the start of a line, the match ends with the
             # preceding line's newline and does not extend into the line that `end_pos` points to
             end_line_num -= 1
@@ -938,15 +969,15 @@ def find_text_coordinates(content: str, regex: str, require_unique: bool = False
     :return: the coordinates of the match or None
     """
     pattern = re.compile(regex, flags=re.MULTILINE | re.DOTALL)
-    matches = list(pattern.finditer(content))
-    if len(matches) == 0:
+    matches = pattern.finditer(content)
+    match = next(matches, None)
+    if match is None:
         if require_unique:
             raise ValueError(f"No match found for regex: {regex}")
         return None
     else:
-        if require_unique and len(matches) > 1:
-            raise ValueError(f"Match must be unique; found {len(matches)} matches for regex: {regex}")
-        match = matches[0]
+        if require_unique and next(matches, None) is not None:
+            raise ValueError(f"Match must be unique; found multiple matches for regex: {regex}")
         if len(match.groups()) != 1:
             raise ValueError(f"Regex must contain exactly one group to capture the position, but found {len(match.groups())} groups.")
         index_in_content = match.start(1)

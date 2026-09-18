@@ -151,6 +151,25 @@ class TestSearchText:
         assert matched_lines == expected_matched_lines
         assert matches[0].num_matched_lines == len(expected_matched_lines)
 
+    def test_search_text_dense_matches_keep_line_numbers(self):
+        content = "".join(f"row-{i}: x\r\n" if i % 3 == 0 else f"row-{i}: x\n" for i in range(2000))
+        matches = search_text("x", content=content)
+        assert len(matches) == 2000
+        assert [matches[i].matched_lines[0].line_number for i in (0, 1, 999, 1999)] == [0, 1, 999, 1999]
+
+    @pytest.mark.parametrize(
+        ("content", "pattern", "expected"),
+        [
+            ("a\r\nb", r"\n", [0]),
+            ("a\r\nb", r"\r\n", [0]),
+            ("a\rb", r"\r", [0]),
+            ("a\nb", r"\n", [0]),
+        ],
+    )
+    def test_search_text_line_index_preserves_newline_boundary_semantics(self, content: str, pattern: str, expected: list[int]):
+        matches = search_text(pattern, content=content)
+        assert [line.line_number for line in matches[0].matched_lines] == expected
+
     def test_search_text_with_multiline_match(self):
         """Test searching with multiline pattern matching."""
         content = """

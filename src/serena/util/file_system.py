@@ -6,6 +6,7 @@ import re
 import stat
 import tempfile
 import time
+from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -248,7 +249,7 @@ class GitignoreParser:
 
         :return: an iterator yielding paths to .gitignore files (top-down)
         """
-        queue: list[str] = [self.repo_root]
+        queue = deque([self.repo_root])
 
         def scan(abs_path: str | None) -> Iterator[str]:
             try:
@@ -270,7 +271,7 @@ class GitignoreParser:
                     continue
 
         while queue:
-            next_abs_path = queue.pop(0)
+            next_abs_path = queue.popleft()
             if next_abs_path != self.repo_root:
                 try:
                     rel_path = os.path.relpath(next_abs_path, self.repo_root)
