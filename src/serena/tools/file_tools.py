@@ -2,7 +2,7 @@
 File and file system-related tools, specifically for
   * listing directory contents
   * reading files
-  * creating files
+  * creating, deleting, copying, and moving filesystem paths
   * editing at the file level
 """
 # SPDX-License-Identifier: GPL-3.0-or-later

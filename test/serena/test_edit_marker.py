@@ -1,4 +1,4 @@
-from serena.tools import CreateTextFileTool, ReadFileTool, Tool
+from serena.tools import CopyPathTool, CreateTextFileTool, DeletePathTool, MovePathTool, ReadFileTool, Tool
 
 
 class TestEditMarker:
@@ -11,3 +11,6 @@ class TestEditMarker:
         # Editing tool should return True
         assert issubclass(CreateTextFileTool, Tool)
         assert CreateTextFileTool.can_edit()
+        assert DeletePathTool.can_edit()
+        assert CopyPathTool.can_edit()
+        assert MovePathTool.can_edit()

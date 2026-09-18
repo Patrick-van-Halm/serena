@@ -197,6 +197,11 @@ class FsApi(FacadeApi):
         project.validate_relative_path(path)
         return Path(os.path.abspath(os.path.join(project.project_root, path)))
 
+    def _mark_file_system_dirty_if_project_path(self, *paths: str) -> None:
+        project = self._get_project()
+        if any(project.is_path_in_project(path) for path in paths):
+            project.mark_file_system_dirty()
+
     def _is_project_root(self, path: Path) -> bool:
         root = Path(os.path.abspath(self._get_project().project_root))
         return os.path.normcase(str(path)) == os.path.normcase(str(root))
@@ -286,7 +291,7 @@ class FsApi(FacadeApi):
         # write the file
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         abs_path.write_text(content, encoding=project.project_config.encoding, newline=project.line_ending.newline_str)
-        project.mark_file_system_dirty()
+        self._mark_file_system_dirty_if_project_path(relative_path)
         answer = f"File created: {relative_path}."
         if will_overwrite_existing:
             answer += " Overwrote existing file."
@@ -312,7 +317,7 @@ class FsApi(FacadeApi):
             raise FileNotFoundError(f"Path not found: {relative_path}")
 
         kind = self._remove_path(path, recursive=recursive)
-        project.mark_file_system_dirty()
+        self._mark_file_system_dirty_if_project_path(relative_path)
         return f"Deleted {kind}: {relative_path}."
 
     @facade_method(can_edit=True, corresponding_tool=CopyPathTool)
@@ -342,7 +347,7 @@ class FsApi(FacadeApi):
             shutil.copy2(source, destination, follow_symlinks=False)
             kind = "path"
 
-        project.mark_file_system_dirty()
+        self._mark_file_system_dirty_if_project_path(destination_path)
         return f"Copied {kind}: {source_path} -> {destination_path}."
 
     @facade_method(can_edit=True, corresponding_tool=MovePathTool)
@@ -369,7 +374,7 @@ class FsApi(FacadeApi):
         self._prepare_destination(source, destination, overwrite)
         shutil.move(str(source), str(destination))
 
-        project.mark_file_system_dirty()
+        self._mark_file_system_dirty_if_project_path(source_path, destination_path)
         return f"Moved path: {source_path} -> {destination_path}."
 
     @facade_method(corresponding_tool=ListDirTool)
