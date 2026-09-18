@@ -11,7 +11,7 @@ import threading
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Hashable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from copy import copy
 from dataclasses import dataclass
 from pathlib import Path, PurePath
@@ -2437,14 +2437,20 @@ class SolidLanguageServer(ABC):
         lines_by_path: dict[str, list[str]] = {}
         document_symbols_by_path: dict[str, DocumentSymbols] = {}
         body_factories_by_path: dict[str, SymbolBodyFactory] = {}
-        for ref in references:
-            ref_path = ref["relativePath"]
-            assert ref_path is not None
-            ref_line = ref["range"]["start"]["line"]
-            ref_col = ref["range"]["start"]["character"]
+        file_buffers_by_path: dict[str, LSPFileBuffer] = {}
+        # Keep each referenced file open at most once while preserving the language
+        # server's original reference order (important for the import-filter heuristic).
+        with ExitStack() as open_files:
+            for ref in references:
+                ref_path = ref["relativePath"]
+                assert ref_path is not None
+                ref_line = ref["range"]["start"]["line"]
+                ref_col = ref["range"]["start"]["character"]
 
-            with self.open_file(ref_path) as file_data:
-                if ref_path not in lines_by_path:
+                file_data = file_buffers_by_path.get(ref_path)
+                if file_data is None:
+                    file_data = open_files.enter_context(self.open_file(ref_path))
+                    file_buffers_by_path[ref_path] = file_data
                     lines_by_path[ref_path] = file_data.contents.split("\n")
                     document_symbols_by_path[ref_path] = self.request_document_symbols(ref_path, file_buffer=file_data)
                     if include_body:
@@ -2463,73 +2469,73 @@ class SolidLanguageServer(ABC):
                     file_lines=lines_by_path[ref_path],
                     document_symbols=document_symbols_by_path[ref_path],
                 )
-                if containing_symbol is None:
-                    # TODO: HORRIBLE HACK! I don't know how to do it better for now...
-                    # THIS IS BOUND TO BREAK IN MANY CASES! IT IS ALSO SPECIFIC TO PYTHON!
-                    # Background:
-                    # When a variable is used to change something, like
-                    #
-                    # instance = MyClass()
-                    # instance.status = "new status"
-                    #
-                    # we can't find the containing symbol for the reference to `status`
-                    # since there is no container on the line of the reference
-                    # The hack is to try to find a variable symbol in the containing module
-                    # by using the text of the reference to find the variable name (In a very heuristic way)
-                    # and then look for a symbol with that name and kind Variable
-                    ref_text = file_data.contents.split("\n")[ref_line]
-                    if "." in ref_text:
-                        containing_symbol_name = ref_text.split(".")[0]
-                        document_symbols = self.request_document_symbols(ref_path)
-                        for symbol in document_symbols.iter_symbols():
-                            if symbol["name"] == containing_symbol_name and symbol["kind"] == ls_types.SymbolKind.Variable:
-                                containing_symbol = copy(symbol)
-                                containing_symbol["location"] = ref
-                                containing_symbol["range"] = ref["range"]
-                                break
+                    if containing_symbol is None:
+                        # TODO: HORRIBLE HACK! I don't know how to do it better for now...
+                        # THIS IS BOUND TO BREAK IN MANY CASES! IT IS ALSO SPECIFIC TO PYTHON!
+                        # Background:
+                        # When a variable is used to change something, like
+                        #
+                        # instance = MyClass()
+                        # instance.status = "new status"
+                        #
+                        # we can't find the containing symbol for the reference to `status`
+                        # since there is no container on the line of the reference
+                        # The hack is to try to find a variable symbol in the containing module
+                        # by using the text of the reference to find the variable name (In a very heuristic way)
+                        # and then look for a symbol with that name and kind Variable
+                        ref_text = file_data.contents.split("\n")[ref_line]
+                        if "." in ref_text:
+                            containing_symbol_name = ref_text.split(".")[0]
+                            document_symbols = self.request_document_symbols(ref_path)
+                            for symbol in document_symbols.iter_symbols():
+                                if symbol["name"] == containing_symbol_name and symbol["kind"] == ls_types.SymbolKind.Variable:
+                                    containing_symbol = copy(symbol)
+                                    containing_symbol["location"] = ref
+                                    containing_symbol["range"] = ref["range"]
+                                    break
 
-                # We failed retrieving the symbol, falling back to creating a file symbol
-                if containing_symbol is None and include_file_symbols:
-                    log.warning(f"Could not find containing symbol for {ref_path}:{ref_line}:{ref_col}. Returning file symbol instead")
-                    fileRange = self._get_range_from_file_content(file_data.contents)
-                    ref_abs_path = os.path.join(self.repository_root_path, ref_path)
-                    if self._path_contains_dots(ref_path):
-                        ref_abs_path = str(pathlib.Path(ref_abs_path).resolve())
-                    location = ls_types.Location(
-                        uri=self._resolve_file_uri(ref_path),
-                        range=fileRange,
-                        absolutePath=ref_abs_path,
-                        relativePath=ref_path,
-                    )
-                    name = os.path.splitext(os.path.basename(ref_path))[0]
+                    # We failed retrieving the symbol, falling back to creating a file symbol
+                    if containing_symbol is None and include_file_symbols:
+                        log.warning(f"Could not find containing symbol for {ref_path}:{ref_line}:{ref_col}. Returning file symbol instead")
+                        fileRange = self._get_range_from_file_content(file_data.contents)
+                        ref_abs_path = os.path.join(self.repository_root_path, ref_path)
+                        if self._path_contains_dots(ref_path):
+                            ref_abs_path = str(pathlib.Path(ref_abs_path).resolve())
+                        location = ls_types.Location(
+                            uri=self._resolve_file_uri(ref_path),
+                            range=fileRange,
+                            absolutePath=ref_abs_path,
+                            relativePath=ref_path,
+                        )
+                        name = os.path.splitext(os.path.basename(ref_path))[0]
 
-                    containing_symbol = ls_types.UnifiedSymbolInformation(
-                        kind=ls_types.SymbolKind.File,
-                        range=fileRange,
-                        selectionRange=fileRange,
-                        location=location,
-                        name=name,
-                        children=[],
-                    )
+                        containing_symbol = ls_types.UnifiedSymbolInformation(
+                            kind=ls_types.SymbolKind.File,
+                            range=fileRange,
+                            selectionRange=fileRange,
+                            location=location,
+                            name=name,
+                            children=[],
+                        )
 
-                    if include_body:
-                        containing_symbol["body"] = self.create_symbol_body(containing_symbol, factory=body_factory)
+                        if include_body:
+                            containing_symbol["body"] = self.create_symbol_body(containing_symbol, factory=body_factory)
 
-                if containing_symbol is None or (not include_file_symbols and containing_symbol["kind"] == ls_types.SymbolKind.File):
-                    continue
+                    if containing_symbol is None or (not include_file_symbols and containing_symbol["kind"] == ls_types.SymbolKind.File):
+                        continue
 
-                assert "location" in containing_symbol
-                assert "selectionRange" in containing_symbol
+                    assert "location" in containing_symbol
+                    assert "selectionRange" in containing_symbol
 
-                # Checking for self-reference
-                if (
-                    containing_symbol["location"]["relativePath"] == relative_file_path
-                    and containing_symbol["selectionRange"]["start"]["line"] == ref_line
-                    and containing_symbol["selectionRange"]["start"]["character"] == ref_col
-                ):
-                    incoming_symbol = containing_symbol
-                    if include_self:
-                        result.append(ReferenceInSymbol(symbol=containing_symbol, line=ref_line, character=ref_col))
+                    # Checking for self-reference
+                    if (
+                        containing_symbol["location"]["relativePath"] == relative_file_path
+                        and containing_symbol["selectionRange"]["start"]["line"] == ref_line
+                        and containing_symbol["selectionRange"]["start"]["character"] == ref_col
+                    ):
+                        incoming_symbol = containing_symbol
+                        if include_self:
+                            result.append(ReferenceInSymbol(symbol=containing_symbol, line=ref_line, character=ref_col))
                         continue
                     log.debug(f"Found self-reference for {incoming_symbol['name']}, skipping it since {include_self=}")
                     continue
