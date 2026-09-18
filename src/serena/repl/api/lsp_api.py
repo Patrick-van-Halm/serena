@@ -222,7 +222,7 @@ class LspReferenceCollection(RepresentableViaRenderer):
     def __init__(
         self,
         references: list[ReferenceInLanguageServerSymbol],
-        contents_around_references: list[str],
+        contents_around_references: list[str | None],
         renderer: "LspReferenceCollectionRenderer",
     ):
         """
@@ -248,21 +248,51 @@ class LspReferenceCollectionRenderer(Renderer[LspReferenceCollection]):
         super().__init__(agent, max_answer_chars)
         self._grouper = grouper
 
+    @staticmethod
+    def _reference_summary(ref: ReferenceInLanguageServerSymbol) -> dict[str, Any]:
+        ref_dict = ref.symbol.to_dict(kind=True, relative_path=True, depth=0, body=False, body_location=True)
+        return {
+            "name_path": ref_dict.get("name_path"),
+            "kind": ref_dict.get("kind"),
+            "relative_path": ref_dict.get("relative_path"),
+            "reference_line": ref.line,
+        }
+
+    def collect_context_with_budget(
+        self,
+        references: list[ReferenceInLanguageServerSymbol],
+        content_loader: Callable[[ReferenceInLanguageServerSymbol], str],
+    ) -> list[str | None]:
+        """Load surrounding source only while it can plausibly fit in the answer budget."""
+        summaries = [self._reference_summary(ref) for ref in references]
+        metadata_size = len(self._to_json(self._grouper.group([dict(summary) for summary in summaries])))
+        remaining = self._get_max_answer_chars() - metadata_size
+        if remaining <= 0:
+            return [None] * len(references)
+
+        contents: list[str | None] = []
+        # JSON keys, quoting and grouping add overhead beyond the snippet itself. Reserve a
+        # small per-entry margin rather than reading source that will certainly be discarded.
+        per_entry_overhead = 96
+        for index, ref in enumerate(references):
+            content = content_loader(ref)
+            cost = len(content) + per_entry_overhead
+            if cost > remaining:
+                contents.extend([None] * (len(references) - index))
+                break
+            contents.append(content)
+            remaining -= cost
+        return contents
+
     def render(self, obj: LspReferenceCollection) -> str:
         reference_dicts = []
         ref_summaries = []
         for ref, content_around_ref in zip(obj.references, obj.contents_around_references_, strict=True):
             ref_dict = dict(ref.symbol.to_dict(kind=True, relative_path=True, depth=0, body=False, body_location=True))
-            ref_dict["content_around_reference"] = content_around_ref
+            if content_around_ref is not None:
+                ref_dict["content_around_reference"] = content_around_ref
             reference_dicts.append(ref_dict)
-            ref_summaries.append(
-                {
-                    "name_path": ref_dict.get("name_path"),
-                    "kind": ref_dict.get("kind"),
-                    "relative_path": ref_dict.get("relative_path"),
-                    "reference_line": ref.line,
-                }
-            )
+            ref_summaries.append(self._reference_summary(ref))
 
         result = self._to_json(self._grouper.group(reference_dicts))
 
@@ -559,8 +589,8 @@ class LspApi(FacadeApi):
             include_kinds=self._parse_kinds(include_kinds),
             exclude_kinds=self._parse_kinds(exclude_kinds),
         )
-        contents_around_references = [self._retrieve_content_around_reference(ref) for ref in references]
         renderer = LspReferenceCollectionRenderer(self._agent, max_answer_chars, self.references_grouper_)
+        contents_around_references = renderer.collect_context_with_budget(references, self._retrieve_content_around_reference)
         return LspReferenceCollection(references, contents_around_references, renderer)
 
     @facade_method(uses_project_server=True, corresponding_tool=FindImplementationsTool)
