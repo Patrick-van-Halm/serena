@@ -5,6 +5,9 @@ from serena.config.context_mode import SerenaAgentContext
 
 GROK_EXCLUDED_TOOLS = {
     "create_text_file",
+    "delete_path",
+    "copy_path",
+    "move_path",
     "read_file",
     "execute_shell_command",
     "find_file",
