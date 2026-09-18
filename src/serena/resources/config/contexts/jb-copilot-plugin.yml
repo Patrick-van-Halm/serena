@@ -13,6 +13,9 @@ prompt: |
 
 excluded_tools:
   - create_text_file
+  - delete_path
+  - copy_path
+  - move_path
   - read_file
   - execute_shell_command
 
