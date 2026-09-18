@@ -19,6 +19,18 @@ language_backend: LSP
 # IMPORTANT: The REPL interface is a BETA feature. Please provide feedback; if you encounter issues, report them.
 agent_interface: tools
 
+# HIGH-RISK global opt-in for Serena's path-based filesystem operations.
+# When false (the default), file read/write/list/find/search paths are restricted to
+# the active project root. When true, those APIs may target paths outside the project.
+# Symbolic/LSP indexing remains scoped to configured Serena projects.
+#
+# This setting is deliberately GLOBAL ONLY: project.yml cannot enable it, so opening
+# an untrusted repository cannot grant Serena broader filesystem access.
+#
+# Shell execution is intentionally unaffected: execute_shell_command's explicit cwd
+# remains unrestricted regardless of this setting.
+full_access_mode: false
+
 # line ending convention to use when writing source files.
 # Possible values: "lf" (Unix), "crlf" (Windows), "native" (platform default).
 # Note that Serena's own files (e.g. memories and configuration files) always use native line endings.

@@ -955,6 +955,15 @@ class SerenaConfig(SharedConfig, ModeSelectionDefinitionWithBaseModes):
     gui_log_window: bool = False
     log_level: int = logging.INFO
     trace_lsp_communication: bool = False
+    full_access_mode: bool = False
+    """
+    High-risk global opt-in which permits Serena's path-based filesystem operations
+    to target paths outside the active project root.
+
+    This is intentionally global-only so a project's own configuration cannot enable
+    unrestricted filesystem access. Shell execution is not affected by this setting:
+    its explicit working directory remains unrestricted, as before.
+    """
     web_dashboard: bool = True
     web_dashboard_open_on_launch: bool = True
     web_dashboard_interface: str | None = None

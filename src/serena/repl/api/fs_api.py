@@ -183,7 +183,7 @@ class FsApi(FacadeApi):
         """
         Reads the given file or a range of its lines.
 
-        :param relative_path: the relative path to the file to read
+        :param relative_path: path to the file. Normally relative to the project root; with full_access_mode enabled it may be absolute or point outside the project.
         :param start_line: the 0-based index of the first line to be retrieved, negative values count from the end of the file.
         :param end_line: the 0-based index of the last line to be retrieved (inclusive). If None, read until the end of the file.
         :return: the content
@@ -201,7 +201,7 @@ class FsApi(FacadeApi):
         """
         Writes a new file or overwrites an existing file with the given content.
 
-        :param relative_path: the relative path to the file to create
+        :param relative_path: path to the file to create. Normally relative to the project root; with full_access_mode enabled it may be absolute or point outside the project.
         :param content: the (appropriately encoded) content to write to the file
         :return: a message indicating success
         """
@@ -210,11 +210,9 @@ class FsApi(FacadeApi):
         abs_path = (project_root / relative_path).resolve()
         will_overwrite_existing = abs_path.exists()
 
-        # validate the destination path
-        if will_overwrite_existing:
-            project.validate_relative_path(relative_path)
-        else:
-            assert abs_path.is_relative_to(project_root), f"Cannot create file outside of the project directory, got {relative_path=}"
+        # Validate both existing and not-yet-existing destinations. With full_access_mode
+        # enabled this deliberately permits destinations outside the project root.
+        project.validate_relative_path(relative_path)
 
         # write the file
         abs_path.parent.mkdir(parents=True, exist_ok=True)
@@ -231,7 +229,7 @@ class FsApi(FacadeApi):
         """
         Lists files and directories in the given directory (optionally with recursion).
 
-        :param relative_path: the relative path to the directory to list; pass "." to scan the project root
+        :param relative_path: path to the directory to list; pass "." to scan the project root. With full_access_mode enabled it may be absolute or point outside the project.
         :param recursive: whether to scan subdirectories recursively
         :param skip_ignored_files: whether to skip files and directories that are ignored
         :return: the listing
@@ -257,7 +255,7 @@ class FsApi(FacadeApi):
         Finds files matching the given file mask within the given relative path.
 
         :param file_mask: the filename or file mask (using the wildcards * or ?) to search for
-        :param relative_path: the relative path to the directory to search in; pass "." to scan the project root
+        :param relative_path: path to the directory to search in; pass "." to scan the project root. With full_access_mode enabled it may be absolute or point outside the project.
         :return: the relative paths of the matching files
         """
         project = self._get_project()
@@ -303,7 +301,7 @@ class FsApi(FacadeApi):
         :param context_lines_after: number of context lines to include after each match.
         :param paths_include_glob: optional glob (relative to project root, e.g. ``"src/**/*.ts"``) restricting which files are searched.
         :param paths_exclude_glob: optional glob to exclude files; takes precedence over `paths_include_glob`.
-        :param relative_path: restricts the search to this file or subdirectory of the project root
+        :param relative_path: restricts the search to this file or directory. Normally project-relative; with full_access_mode enabled it may be absolute or point outside the project.
         :param restrict_search_to_code_files: whether to search only (non-ignored) files containing analyzable code symbols
             (useful when looking for class/method definitions); otherwise also search non-code files.
         :param skip_ignored_files: whether to skip ignored sub-paths (default: True)

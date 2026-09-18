@@ -268,21 +268,33 @@ class Project(ToStringMixin):
 
     def is_ignored_path(self, path: str | Path, ignore_non_source_files: bool = False) -> bool:
         """
-        Checks whether the given path is ignored
+        Checks whether the given path is ignored.
+
+        Paths outside the active project are ignored by default. With global
+        full_access_mode enabled, outside paths bypass the active project's ignore
+        specification. If ignore_non_source_files is requested, source-file extension
+        filtering still applies.
 
         :param path: the path to check, can be absolute or relative
         :param ignore_non_source_files: whether to ignore files that are not source files
             (according to the file masks determined by the project's programming language)
         """
         path = Path(path)
-        if path.is_absolute():
-            try:
-                relative_path = path.relative_to(self.project_root)
-            except ValueError:
-                # If the path is not relative to the project root, we consider it as an absolute path outside the project
-                # (which we ignore)
-                log.warning(f"Path {path} is not relative to the project root {self.project_root} and was therefore ignored")
+        if not self.is_path_in_project(path):
+            if not self.serena_config.full_access_mode:
+                log.warning(f"Path {path} is not within the project root {self.project_root} and was therefore ignored")
                 return True
+
+            abs_path = path if path.is_absolute() else Path(self.project_root, path)
+            if ignore_non_source_files and abs_path.is_file() and self.language_backend.is_lsp():
+                return not any(
+                    language.get_source_fn_matcher().is_relevant_filename(str(abs_path))
+                    for language in self.project_config.language_servers
+                )
+            return False
+
+        if path.is_absolute():
+            relative_path = path.relative_to(self.project_root)
         else:
             relative_path = path
 
@@ -337,22 +349,26 @@ class Project(ToStringMixin):
 
     def validate_relative_path(self, relative_path: str, require_not_ignored: bool = False) -> None:
         """
-        Validates that the given relative path is within the project directory
-        (and, optionally, not ignored according to the project's ignore settings),
-        raising a ValueError if the validation fails.
+        Validates a filesystem path used by a project-scoped API.
 
-        :param relative_path: the path to validate, relative to the project root
+        By default the path must remain within the project root. If the global
+        full_access_mode setting is enabled, absolute paths and relative paths
+        containing ".." may point outside the project root.
+
+        :param relative_path: path to validate; normally relative to the project root
         :param require_not_ignored: if True, the path must not be ignored according to the project's ignore settings
         """
         if FileProxy.is_external_path(relative_path):
             return
 
-        if not self.is_path_in_project(relative_path):
-            raise ValueError(f"{relative_path=} points outside the project root ({self.project_root})")
+        if not self.is_path_in_project(relative_path) and not self.serena_config.full_access_mode:
+            raise ValueError(
+                f"{relative_path=} points outside the project root ({self.project_root}). "
+                "Set full_access_mode: true in Serena's global config to allow out-of-project filesystem access."
+            )
 
-        if require_not_ignored:
-            if self.is_ignored_path(relative_path):
-                raise ValueError(f"Path {relative_path} is ignored")
+        if require_not_ignored and self.is_ignored_path(relative_path):
+            raise ValueError(f"Path {relative_path} is ignored")
 
     def gather_source_files(self, relative_path: str = "") -> list[str]:
         """Retrieves relative paths of all source files, optionally limited to the given path

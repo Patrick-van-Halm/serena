@@ -24,6 +24,10 @@ from solidlsp.ls_config import LanguageServerId
 from test.conftest import create_default_serena_config
 
 
+def test_full_access_mode_defaults_to_false() -> None:
+    assert SerenaConfig().full_access_mode is False
+
+
 class TestProjectConfigAutogenerate:
     """Test class for ProjectConfig autogeneration functionality."""
 
@@ -629,6 +633,10 @@ class TestSerenaConfigLoadSave:
         for p in project_paths:
             body_lines.append(f"  - {p}")
         self.master_config_path.write_text("\n".join(body_lines) + "\n")
+
+    def test_full_access_mode_loads_from_global_config(self):
+        self.master_config_path.write_text("projects: []\nfull_access_mode: true\n")
+        assert SerenaConfig.from_config_file(generate_if_missing=False).full_access_mode is True
 
     def test_empty_projects_key_is_treated_as_empty_list(self):
         """A bare ``projects:`` key should not abort config loading."""

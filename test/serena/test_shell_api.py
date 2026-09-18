@@ -43,3 +43,16 @@ def test_execute_shell_command(api: ShellApi, tmp_path: Path) -> None:
     assert Path(api.execute_shell_command(print_cwd, cwd="sub").stdout.strip()).resolve() == (tmp_path / "sub").resolve()
     with pytest.raises(FileNotFoundError):
         api.execute_shell_command(print_cwd, cwd="missing")
+
+
+def test_shell_absolute_cwd_remains_unrestricted(api: ShellApi, tmp_path: Path) -> None:
+    """full_access_mode intentionally does not gate shell cwd."""
+    print_cwd = "cd" if sys.platform == "win32" else "pwd"
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-shell-outside"
+    outside_dir.mkdir(exist_ok=True)
+
+    project = api._get_project()
+    assert project.serena_config.full_access_mode is False
+
+    output = api.execute_shell_command(print_cwd, cwd=str(outside_dir))
+    assert Path(output.stdout.strip()).resolve() == outside_dir.resolve()

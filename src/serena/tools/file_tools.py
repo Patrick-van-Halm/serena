@@ -44,14 +44,14 @@ class FsApiMixin:
 
 class ReadFileTool(Tool, FsApiMixin):
     """
-    Reads a file within the project directory.
+    Reads a file within the project directory, or outside it when full_access_mode is enabled.
     """
 
     def apply(self, relative_path: str, start_line: int = 0, end_line: int | None = None, max_answer_chars: int = -1) -> str:
         """
         Reads the given file or a chunk of it.
 
-        :param relative_path: the relative path to the file to read
+        :param relative_path: path to the file to read; outside-project paths require full_access_mode
         :param start_line: the 0-based index of the first line to be retrieved, negative values count from the end of the file.
         :param end_line: the 0-based index of the last line to be retrieved (inclusive). If None, read until the end of the file.
         :param max_answer_chars: if the file (chunk) is longer than this number of characters,
@@ -64,14 +64,14 @@ class ReadFileTool(Tool, FsApiMixin):
 
 class CreateTextFileTool(EditingToolWithDiagnostics, FsApiMixin):
     """
-    Creates/overwrites a file in the project directory.
+    Creates/overwrites a file in the project directory, or outside it when full_access_mode is enabled.
     """
 
     def apply(self, relative_path: str, content: str) -> str:
         """
         Write a new file or overwrite an existing file with the given content.
 
-        :param relative_path: the relative path to the file to create
+        :param relative_path: path to the file to create; outside-project paths require full_access_mode
         :param content: the (appropriately encoded) content to write to the file
         :return: a message indicating success or failure
         """
@@ -88,7 +88,7 @@ class ListDirTool(Tool, FsApiMixin):
         """
         Lists files and directories in the given directory (optionally with recursion).
 
-        :param relative_path: the relative path to the directory to list; pass "." to scan the project root
+        :param relative_path: directory to list; outside-project paths require full_access_mode; pass "." for the project root
         :param recursive: whether to scan subdirectories recursively
         :param skip_ignored_files: whether to skip files and directories that are ignored
         :param max_answer_chars: if the output is longer than this number of characters,
@@ -112,7 +112,7 @@ class FindFileTool(Tool, FsApiMixin):
         Finds files matching the given file mask within the given relative path
 
         :param file_mask: the filename or file mask (using the wildcards * or ?) to search for
-        :param relative_path: the relative path to the directory to search in; pass "." to scan the project root
+        :param relative_path: directory to search; outside-project paths require full_access_mode; pass "." for the project root
         :param skip_ignored_files: whether to skip ignored files/directories
         :return: a JSON object with the list of matching files
         """
@@ -335,7 +335,7 @@ class SearchForPatternTool(Tool, FsApiMixin):
         :param context_lines_after: number of context lines to include after each match.
         :param paths_include_glob: optional glob (relative to project root, e.g. ``"src/**/*.ts"``) restricting which files are searched.
         :param paths_exclude_glob: optional glob to exclude files; takes precedence over `paths_include_glob`.
-        :param relative_path: restricts the search to this file or subdirectory of the project root
+        :param relative_path: restricts the search to this file or directory; outside-project paths require full_access_mode
         :param restrict_search_to_code_files: whether to search only (non-ignored) files containing analyzable code symbols
             (useful when looking for class/method definitions); otherwise also search non-code files.
         :param skip_ignored_files: whether to skip ignored sub-paths (default: True)

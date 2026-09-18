@@ -71,8 +71,57 @@ def test_create_text_file(api: FsApi, project: Project) -> None:
     result = api.create_text_file("sub/new.txt", "changed\n")
     assert "Overwrote" in result
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError, match="full_access_mode"):
         api.create_text_file("../outside.txt", "nope")
+
+
+def test_outside_file_operations_require_full_access(api: FsApi, project: Project, tmp_path: Path) -> None:
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside_dir.mkdir(exist_ok=True)
+    outside_file = outside_dir / "outside.txt"
+    outside_file.write_text("outside foo\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="full_access_mode"):
+        api.read_file(str(outside_file))
+    with pytest.raises(ValueError, match="full_access_mode"):
+        api.list_dir(str(outside_dir), recursive=False)
+    with pytest.raises(ValueError, match="full_access_mode"):
+        api.find_file("*.txt", str(outside_dir))
+    with pytest.raises(ValueError, match="full_access_mode"):
+        api.search_for_pattern("outside", relative_path=str(outside_dir))
+
+
+def test_full_access_mode_allows_outside_file_operations(api: FsApi, project: Project, tmp_path: Path) -> None:
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-outside-enabled"
+    outside_dir.mkdir(exist_ok=True)
+    outside_file = outside_dir / "outside.txt"
+    outside_file.write_text("outside foo\n", encoding="utf-8")
+    project.serena_config.full_access_mode = True
+
+    assert api.read_file(str(outside_file)).text == "outside foo\n"
+    api.create_text_file(str(outside_dir / "created.txt"), "created\n")
+    assert (outside_dir / "created.txt").read_text(encoding="utf-8") == "created\n"
+
+    listing = api.list_dir(str(outside_dir), recursive=False)
+    assert {Path(p).name for p in listing.files} >= {"outside.txt", "created.txt"}
+
+    found = api.find_file("*.txt", str(outside_dir))
+    assert {Path(p).name for p in found} >= {"outside.txt", "created.txt"}
+
+    matches = api.search_for_pattern("outside", relative_path=str(outside_dir))
+    assert len(matches) == 1
+    assert Path(matches.matches[0].source_file_path or "").name == "outside.txt"
+
+
+def test_full_access_mode_allows_relative_parent_escape(api: FsApi, project: Project, tmp_path: Path) -> None:
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-outside-relative"
+    outside_dir.mkdir(exist_ok=True)
+    outside_file = outside_dir / "relative.txt"
+    outside_file.write_text("relative access\n", encoding="utf-8")
+    project.serena_config.full_access_mode = True
+
+    escaped = str(Path("..") / outside_dir.name / "relative.txt")
+    assert api.read_file(escaped).text == "relative access\n"
 
 
 def test_list_dir_and_find_file(api: FsApi) -> None:

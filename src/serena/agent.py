@@ -656,6 +656,10 @@ class SerenaAgent:
         log.info("Configuration file: %s", self.serena_config.config_file_path)
         log.info("Available projects: {}".format(", ".join(self.serena_config.project_names)))
         log.info(f"Loaded tools ({len(self._all_tools)}): {', '.join([tool.get_name_from_cls() for tool in self._all_tools.values()])}")
+        if self.serena_config.full_access_mode:
+            log.warning(
+                "FULL ACCESS MODE IS ENABLED: Serena filesystem APIs may access paths outside the active project root."
+            )
 
         self._check_shell_settings()
 
@@ -1608,6 +1612,7 @@ class SerenaAgent:
         if self._active_project and self._active_project.project_config.language_backend is not None:
             result_str += " (project override)"
         result_str += f" (global default: {self.serena_config.language_backend.value})\n"
+        result_str += f"Full access mode: {self.serena_config.full_access_mode}\n"
         if self._language_backend.is_lsp() and self._active_project:
             result_str += f"Language server status: {self._active_project.get_language_server_manager_status()}\n"
         result_str += "Available projects:\n" + "\n".join(list(self.serena_config.project_names)) + "\n"
