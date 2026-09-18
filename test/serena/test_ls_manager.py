@@ -1,11 +1,13 @@
 import subprocess
 import sys
 import time
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import psutil
 import pytest
 
-from serena.ls_manager import LanguageServerManager, LanguageServerManagerInitialisationError
+from serena.ls_manager import LanguageServerFileChangeNotifier, LanguageServerManager, LanguageServerManagerInitialisationError
 from solidlsp.ls_config import LanguageServerId
 
 
@@ -101,3 +103,41 @@ def test_from_languages_stops_process_of_server_that_raises_after_spawning(_clea
     assert set(pids) == {ok_id, failing_id}
     assert not _pid_alive(pids[ok_id]), "the successfully-started server's process should be stopped"
     assert not _pid_alive(pids[failing_id]), "the process spawned by the server that raised post-spawn must not leak"
+
+
+
+def test_nonforced_cache_saves_are_coalesced() -> None:
+    manager = LanguageServerManager.__new__(LanguageServerManager)
+    fake_ls = MagicMock()
+    fake_ls.is_running.return_value = True
+    fake_ls.ls_id = LanguageServerId.PYTHON
+    manager._language_servers = {LanguageServerId.PYTHON: fake_ls}
+    manager._last_cache_save_time = 0.0
+
+    manager.save_all_caches(force=False)
+    manager.save_all_caches(force=False)
+    assert fake_ls.save_cache.call_count == 1
+
+    manager.save_all_caches(force=True)
+    assert fake_ls.save_cache.call_count == 2
+
+
+def test_file_change_poll_is_debounced(tmp_path: Path) -> None:
+    source = tmp_path / "a.py"
+    source.write_text("x = 1\n", encoding="utf-8")
+    project = MagicMock(project_root=str(tmp_path))
+    project.gather_source_files.return_value = ["a.py"]
+    manager = MagicMock()
+    manager.iter_language_servers.return_value = []
+
+    notifier = LanguageServerFileChangeNotifier(project, manager, initial_poll=False)
+    notifier.POLL_DEBOUNCE_SECONDS = 60.0
+    assert notifier.poll_and_notify(force=True) == 0
+    assert project.gather_source_files.call_count == 1
+
+    assert notifier.poll_and_notify() == 0
+    assert project.gather_source_files.call_count == 1
+
+    source.write_text("x = 2\n", encoding="utf-8")
+    assert notifier.poll_and_notify(force=True) == 1
+    assert project.gather_source_files.call_count == 2

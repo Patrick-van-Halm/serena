@@ -3,6 +3,7 @@
 import logging
 import os.path
 import threading
+from time import monotonic
 from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -90,7 +91,23 @@ class LanguageServerManager:
         """
         self._language_servers = language_servers
         self._language_server_factory = language_server_factory
-        self._file_change_notifier = LanguageServerFileChangeNotifier(project, self)
+        self._last_cache_save_time = 0.0
+        self._file_change_notifier = LanguageServerFileChangeNotifier(project, self, initial_poll=False)
+
+        # Establish the expensive full-project freshness baseline without delaying manager
+        # construction. A first symbolic call racing this thread will serialize with it.
+        threading.Thread(
+            target=self._initialize_file_change_baseline,
+            name="SerenaFileChangeBaseline",
+            daemon=True,
+        ).start()
+
+    def _initialize_file_change_baseline(self) -> None:
+        try:
+            with LogTime("Initialising file change notifier (polling for baseline)"):
+                self._file_change_notifier.poll_and_notify(force=True)
+        except Exception as e:
+            log.error("Failed to initialise file change notifier baseline", exc_info=e)
 
     @property
     def _default_language_server(self) -> SolidLanguageServer:
@@ -259,13 +276,23 @@ class LanguageServerManager:
         for ls in self.iter_language_servers():
             self._stop_language_server(ls, save_cache=save_cache, timeout=timeout)
 
-    def save_all_caches(self) -> None:
+    CACHE_SAVE_MIN_INTERVAL_SECONDS = 5.0
+
+    def save_all_caches(self, force: bool = True) -> None:
         """
         Saves the caches of all managed language servers.
+
+        Non-forced saves are coalesced so a burst of tool calls does not repeatedly pickle
+        an ever-growing project cache. Explicit callers and shutdown paths can still force
+        an immediate flush.
         """
+        now = monotonic()
+        if not force and now - self._last_cache_save_time < self.CACHE_SAVE_MIN_INTERVAL_SECONDS:
+            return
         for ls in self.iter_language_servers():
             if ls.is_running():
                 ls.save_cache()
+        self._last_cache_save_time = monotonic()
 
     def has_suitable_ls_for_file(self, relative_file_path: str) -> bool:
         return self._get_suitable_language_server(relative_file_path) is not None
@@ -289,18 +316,22 @@ class LanguageServerFileChangeNotifier:
     Detects changes to source files on disk and notifies language servers of those changes.
     """
 
+    POLL_DEBOUNCE_SECONDS = 0.75
+
     def __init__(self, project: "Project", language_server_manager: LanguageServerManager, initial_poll: bool = True) -> None:
         self._project = project
         self._language_server_manager = language_server_manager
-        self._freshness_last_seen_mtimes: dict[str, float] | None = None
+        self._freshness_last_seen_mtimes: dict[str, int] | None = None
         self._freshness_lock = threading.Lock()
+        self._poll_lock = threading.Lock()
+        self._last_poll_completed_at: float | None = None
 
         if initial_poll:
             # Establish the baseline for the first poll; no notifications are sent on the first call.
             with LogTime("Initialising file change notifier (polling for baseline)"):
-                self.poll_and_notify()
+                self.poll_and_notify(force=True)
 
-    def poll_and_notify(self) -> int:
+    def poll_and_notify(self, force: bool = False) -> int:
         """
         Detects source files that were changed, created or deleted on disk since the last call
         and notifies every language server managed for this project via the LSP
@@ -319,15 +350,26 @@ class LanguageServerFileChangeNotifier:
         :return: the number of change events sent (0 if nothing changed, if no language server is
             running yet, or on the first call, which only establishes the baseline).
         """
-        current: dict[str, float] = {}
-        for rel_path in self._project.gather_source_files():
-            try:
-                current[rel_path] = os.stat(os.path.join(self._project.project_root, rel_path)).st_mtime
-            except OSError:
-                continue
+        with self._poll_lock:
+            now = monotonic()
+            if (
+                not force
+                and self._last_poll_completed_at is not None
+                and now - self._last_poll_completed_at < self.POLL_DEBOUNCE_SECONDS
+            ):
+                log.debug("Skipping file-system freshness poll within debounce interval")
+                return 0
 
-        # Read-diff-swap under the lock only; the filesystem walk above and the LSP notifications
-        # below stay outside it so concurrent callers do not serialize on I/O.
+            current: dict[str, int] = {}
+            for rel_path in self._project.gather_source_files():
+                try:
+                    current[rel_path] = os.stat(os.path.join(self._project.project_root, rel_path)).st_mtime_ns
+                except OSError:
+                    continue
+            self._last_poll_completed_at = monotonic()
+
+        # Read-diff-swap under the state lock. The poll lock above prevents duplicate
+        # concurrent directory walks while allowing LSP notifications to happen unlocked.
         with self._freshness_lock:
             previous = self._freshness_last_seen_mtimes
             self._freshness_last_seen_mtimes = current

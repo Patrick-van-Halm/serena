@@ -13,6 +13,7 @@ import pytest
 from serena.symbol import LanguageServerSymbol
 from serena.util.text_utils import find_text_coordinates
 from solidlsp import SolidLanguageServer
+from solidlsp.ls_utils import FileUtils
 from solidlsp.ls import SymbolBodyFactory
 from solidlsp.ls_types import SymbolKind
 from test.solidlsp.conftest import PYTHON_BACKEND_LANGUAGES
@@ -41,6 +42,20 @@ def test_symbol_body_factory_defers_line_split() -> None:
 
 class TestLanguageServerSymbols:
     """Test the language server's symbol-related functionality."""
+
+    @pytest.mark.parametrize("language_server", PYTHON_BACKEND_LANGUAGES, indirect=True)
+    def test_document_symbol_cache_hit_does_not_reread_source(
+        self, language_server: SolidLanguageServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        file_path = os.path.join("test_repo", "services.py")
+        language_server.request_document_symbols(file_path)
+
+        def fail_read(*args, **kwargs):
+            pytest.fail("unchanged document-symbol cache hit reread the source file")
+
+        monkeypatch.setattr(FileUtils, "read_file", fail_read)
+        cached = language_server.request_document_symbols(file_path)
+        assert len(cached.root_symbols) > 0
 
     @pytest.mark.parametrize("language_server", PYTHON_BACKEND_LANGUAGES, indirect=True)
     def test_request_containing_symbol_function(self, language_server: SolidLanguageServer) -> None:

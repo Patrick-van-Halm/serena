@@ -61,6 +61,13 @@ from solidlsp.settings import SolidLSPSettings
 from solidlsp.util.cache import load_cache, save_cache
 
 RawDocumentSymbol = Union[DocumentSymbol, SymbolInformation]
+FileSignature = tuple[int, int, int]
+
+
+def _file_signature(path: Path) -> FileSignature:
+    stat_result = path.stat()
+    return (stat_result.st_mtime_ns, stat_result.st_size, stat_result.st_ctime_ns)
+
 """
 Type alias for the raw symbol information returned by a language server in response to a
 `textDocument/documentSymbol` request.
@@ -109,8 +116,8 @@ class LSPFileBuffer:
         self.abs_path = abs_path
         self.language_server = language_server
         self.uri = uri
-        self._read_file_modified_date: float | None = None
-        self._read_file_modified_date_passed_to_ls: float | None = None
+        self._read_file_modified_date: int | None = None
+        self._read_file_modified_date_passed_to_ls: int | None = None
         self._contents: str | None = None
         self.version = version
         self.language_id = language_id
@@ -177,7 +184,7 @@ class LSPFileBuffer:
         """
         self._open_in_ls()
 
-    def _invalidate_cached_data(self, mtime: float | None = None) -> float | None:
+    def _invalidate_cached_data(self, mtime: int | None = None) -> None:
         """
         Invalidates cached data (file contents, hash) if the file was modified since it was read
 
@@ -185,14 +192,14 @@ class LSPFileBuffer:
         """
         if self._read_file_modified_date is not None:
             if mtime is None:
-                mtime = self.abs_path.stat().st_mtime
+                mtime = self.abs_path.stat().st_mtime_ns
             if mtime > self._read_file_modified_date:
                 self._contents = None
                 self._content_hash = None
 
     @property
     def contents(self) -> str:
-        file_modified_date = self.abs_path.stat().st_mtime
+        file_modified_date = self.abs_path.stat().st_mtime_ns
         self._invalidate_cached_data(file_modified_date)
         if self._contents is None:
             self._read_file_modified_date = file_modified_date
@@ -210,6 +217,11 @@ class LSPFileBuffer:
         """
         self._contents = new_contents
         self._content_hash = None
+
+    @property
+    def file_signature(self) -> FileSignature:
+        """Cheap metadata fingerprint used before falling back to a content hash."""
+        return _file_signature(self.abs_path)
 
     @property
     def content_hash(self) -> str:
@@ -375,7 +387,7 @@ class SolidLanguageServer(ABC):
     """
 
     CACHE_FOLDER_NAME = "cache"
-    RAW_DOCUMENT_SYMBOLS_CACHE_VERSION = 1
+    RAW_DOCUMENT_SYMBOLS_CACHE_VERSION = 2
     """
     global version identifier for raw symbol caches; an LS-specific version is defined separately and combined with this.
     This should be incremented whenever there is a change in the way raw document symbols are stored.
@@ -384,7 +396,7 @@ class SolidLanguageServer(ABC):
     """
     RAW_DOCUMENT_SYMBOL_CACHE_FILENAME = "raw_document_symbols.pkl"
     RAW_DOCUMENT_SYMBOL_CACHE_FILENAME_LEGACY_FALLBACK = "document_symbols_cache_v23-06-25.pkl"
-    DOCUMENT_SYMBOL_CACHE_VERSION = 4
+    DOCUMENT_SYMBOL_CACHE_VERSION = 5
     """
     defines the version of the high-level document symbol format.
     This should be incremented whenever there is a change in the way document symbols are stored.
@@ -576,13 +588,15 @@ class SolidLanguageServer(ABC):
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         # * raw document symbols cache
         self._ls_specific_raw_document_symbols_cache_version = cache_version_raw_document_symbols
-        self._raw_document_symbols_cache: dict[str, tuple[str, list[DocumentSymbol] | list[SymbolInformation] | None]] = {}
-        """maps relative file paths to a tuple of (file_content_hash, raw_root_symbols)"""
+        self._raw_document_symbols_cache: dict[
+            str, tuple[FileSignature, str, list[DocumentSymbol] | list[SymbolInformation] | None]
+        ] = {}
+        """maps paths to (file_signature, file_content_hash, raw_root_symbols)"""
         self._raw_document_symbols_cache_is_modified: bool = False
         self._load_raw_document_symbols_cache()
         # * high-level document symbols cache
-        self._document_symbols_cache: dict[str, tuple[str, DocumentSymbols]] = {}
-        """maps relative file paths to a tuple of (file_content_hash, document_symbols)"""
+        self._document_symbols_cache: dict[str, tuple[FileSignature, str, DocumentSymbols]] = {}
+        """maps paths to (file_signature, file_content_hash, document_symbols)"""
         self._document_symbols_cache_is_modified: bool = False
         self._load_document_symbols_cache()
 
@@ -1884,10 +1898,19 @@ class SolidLanguageServer(ABC):
                 log.debug("perf: raw_document_symbols_cache MISS path=%s", relative_file_path)
                 return None
 
-            file_hash, result = file_hash_and_result
-            if file_hash == fd.content_hash:
-                log.debug("Returning cached raw document symbols for %s", relative_file_path)
+            cached_signature, file_hash, result = file_hash_and_result
+            current_signature = fd.file_signature
+            if cached_signature == current_signature:
+                log.debug("Returning cached raw document symbols for %s by file signature", relative_file_path)
                 log.debug("perf: raw_document_symbols_cache HIT path=%s", relative_file_path)
+                return result
+
+            if file_hash == fd.content_hash:
+                # Metadata changed but contents did not (touch/chmod/etc.). Refresh the cheap
+                # signature so subsequent lookups avoid rereading and hashing the file.
+                self._raw_document_symbols_cache[cache_key] = (fd.file_signature, file_hash, result)
+                self._raw_document_symbols_cache_is_modified = True
+                log.debug("Returning cached raw document symbols for %s after hash verification", relative_file_path)
                 return result
 
             log.debug("Document content for %s has changed (raw symbol cache is not up-to-date)", relative_file_path)
@@ -1908,7 +1931,8 @@ class SolidLanguageServer(ABC):
             # has not yet finished indexing or building the project (e.g. Lean 4 before `lake build`),
             # and caching it would permanently serve stale data even after the project is ready.
             if response:
-                self._raw_document_symbols_cache[cache_key] = (fd.content_hash, response)
+                content_hash = fd.content_hash
+                self._raw_document_symbols_cache[cache_key] = (fd.file_signature, content_hash, response)
                 self._raw_document_symbols_cache_is_modified = True
 
             return response
@@ -1980,9 +2004,16 @@ class SolidLanguageServer(ABC):
             if file_hash_and_result is None:
                 log.debug("No cache hit for document symbols in %s", relative_file_path)
             else:
-                file_hash, document_symbols = file_hash_and_result
+                cached_signature, file_hash, document_symbols = file_hash_and_result
+                current_signature = file_data.file_signature
+                if cached_signature == current_signature:
+                    log.debug("Returning cached document symbols for %s by file signature", relative_file_path)
+                    return document_symbols
+
                 if file_hash == file_data.content_hash:
-                    log.debug("Returning cached document symbols for %s (hash=%s)", relative_file_path, file_hash)
+                    self._document_symbols_cache[cache_key] = (file_data.file_signature, file_hash, document_symbols)
+                    self._document_symbols_cache_is_modified = True
+                    log.debug("Returning cached document symbols for %s after hash verification", relative_file_path)
                     return document_symbols
 
                 log.debug("Cached document symbol content for %s has changed (old hash=%s)", relative_file_path, file_hash)
@@ -1993,7 +2024,7 @@ class SolidLanguageServer(ABC):
             # update cache
             content_hash = file_data.content_hash
             log.debug("Updating cached document symbols for %s (hash=%s)", relative_file_path, content_hash)
-            self._document_symbols_cache[cache_key] = (content_hash, document_symbols)
+            self._document_symbols_cache[cache_key] = (file_data.file_signature, content_hash, document_symbols)
             self._document_symbols_cache_is_modified = True
 
             return document_symbols
@@ -3077,7 +3108,11 @@ class SolidLanguageServer(ABC):
                     for cache_key, (file_hash, (all_symbols, root_symbols)) in legacy_cache.items():
                         if cache_key.endswith("-True"):  # include_body=True
                             new_cache_key = cache_key[:-5]
-                            migrated_cache[new_cache_key] = (file_hash, root_symbols)
+                            try:
+                                signature = _file_signature(Path(self.repository_root_path, new_cache_key))
+                            except OSError:
+                                continue
+                            migrated_cache[new_cache_key] = (signature, file_hash, root_symbols)
                             num_symbols_migrated += len(all_symbols)
                     log.info("Migrated %d document symbols from legacy cache", num_symbols_migrated)
                     self._raw_document_symbols_cache = migrated_cache
