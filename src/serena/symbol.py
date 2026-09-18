@@ -794,6 +794,23 @@ class LanguageServerSymbolRetriever:
         """
         symbols: list[LanguageServerSymbol] = []
 
+        # Preserve the legacy synthetic package/file symbols when a caller explicitly
+        # requests those kinds. Ordinary find_symbol calls search code symbols and can
+        # avoid constructing the synthetic project tree entirely.
+        synthetic_kinds = {SymbolKind.File, SymbolKind.Package}
+        if include_kinds is not None and any(kind in synthetic_kinds for kind in include_kinds):
+            for lang_server in self._ls_manager.iter_language_servers():
+                for root in lang_server.request_full_symbol_tree(within_relative_path=within_relative_path):
+                    symbols.extend(
+                        LanguageServerSymbol(root).find(
+                            name_path_pattern,
+                            include_kinds=include_kinds,
+                            exclude_kinds=exclude_kinds,
+                            substring_matching=substring_matching,
+                        )
+                    )
+            return symbols
+
         # find_symbol name paths are defined within source files. Building a synthetic
         # package/file symbol tree for every query therefore adds directory traversal,
         # wrapper construction and parent-link work that does not contribute to matching
