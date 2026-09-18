@@ -138,6 +138,13 @@ def test_file_change_poll_is_debounced(tmp_path: Path) -> None:
     assert notifier.poll_and_notify() == 0
     assert project.gather_source_files.call_count == 1
 
-    source.write_text("x = 2\n", encoding="utf-8")
-    assert notifier.poll_and_notify(force=True) == 1
+    # A direct Serena filesystem mutation marks the snapshot dirty, which must bypass
+    # the debounce even though the previous scan was moments ago.
+    notifier.mark_dirty()
+    assert notifier.poll_and_notify() == 0
     assert project.gather_source_files.call_count == 2
+
+    source.write_text("x = 2\n", encoding="utf-8")
+    notifier.mark_dirty()
+    assert notifier.poll_and_notify() == 1
+    assert project.gather_source_files.call_count == 3

@@ -34,8 +34,22 @@ def api(project: Project) -> FsApi:
 def test_facade_exposes_file_operations(api: FsApi) -> None:
     facade = Facade.from_api(api, ApiScope())
     assert facade.name == "fs"
-    assert set(facade.enabled_method_names) == {"read_file", "create_text_file", "list_dir", "find_file", "search_for_pattern"}
-    assert {name for name in facade.enabled_method_names if facade.get_method(name).info.can_edit} == {"create_text_file"}
+    assert set(facade.enabled_method_names) == {
+        "read_file",
+        "create_text_file",
+        "delete_path",
+        "copy_path",
+        "move_path",
+        "list_dir",
+        "find_file",
+        "search_for_pattern",
+    }
+    assert {name for name in facade.enabled_method_names if facade.get_method(name).info.can_edit} == {
+        "create_text_file",
+        "delete_path",
+        "copy_path",
+        "move_path",
+    }
 
 
 def test_read_file(api: FsApi) -> None:
@@ -122,6 +136,90 @@ def test_full_access_mode_allows_relative_parent_escape(api: FsApi, project: Pro
 
     escaped = str(Path("..") / outside_dir.name / "relative.txt")
     assert api.read_file(escaped).text == "relative access\n"
+
+
+def test_copy_move_delete_paths(api: FsApi, project: Project) -> None:
+    root = Path(project.project_root)
+    source = root / "src" / "b.txt"
+
+    result = api.copy_path("src/b.txt", "copies/b-copy.txt")
+    assert "Copied" in result
+    copied = root / "copies" / "b-copy.txt"
+    assert copied.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        api.copy_path("src/b.txt", "copies/b-copy.txt")
+
+    source.write_text("updated\n", encoding="utf-8")
+    api.copy_path("src/b.txt", "copies/b-copy.txt", overwrite=True)
+    assert copied.read_text(encoding="utf-8") == "updated\n"
+
+    api.move_path("copies/b-copy.txt", "moved/final.txt")
+    moved = root / "moved" / "final.txt"
+    assert moved.read_text(encoding="utf-8") == "updated\n"
+    assert not copied.exists()
+
+    api.delete_path("moved/final.txt")
+    assert not moved.exists()
+
+
+def test_copy_and_recursive_delete_directory(api: FsApi, project: Project) -> None:
+    root = Path(project.project_root)
+    tree = root / "tree"
+    (tree / "nested").mkdir(parents=True)
+    (tree / "nested" / "value.txt").write_text("value\n", encoding="utf-8")
+
+    api.copy_path("tree", "tree-copy")
+    assert (root / "tree-copy" / "nested" / "value.txt").read_text(encoding="utf-8") == "value\n"
+
+    with pytest.raises(ValueError, match="recursive=True"):
+        api.delete_path("tree-copy")
+
+    api.delete_path("tree-copy", recursive=True)
+    assert not (root / "tree-copy").exists()
+
+
+def test_move_overwrite_and_project_root_guards(api: FsApi, project: Project) -> None:
+    root = Path(project.project_root)
+    (root / "a.txt").write_text("A", encoding="utf-8")
+    (root / "b.txt").write_text("B", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        api.move_path("a.txt", "b.txt")
+
+    api.move_path("a.txt", "b.txt", overwrite=True)
+    assert (root / "b.txt").read_text(encoding="utf-8") == "A"
+    assert not (root / "a.txt").exists()
+
+    with pytest.raises(ValueError, match="project root"):
+        api.delete_path(".", recursive=True)
+    with pytest.raises(ValueError, match="project root"):
+        api.move_path(".", "../moved-project")
+
+
+def test_copy_move_delete_respect_full_access_mode(api: FsApi, project: Project, tmp_path: Path) -> None:
+    outside_dir = tmp_path.parent / f"{tmp_path.name}-path-ops"
+    outside_dir.mkdir(exist_ok=True)
+    outside_copy = outside_dir / "copied.md"
+    outside_moved = outside_dir / "moved.md"
+
+    with pytest.raises(ValueError, match="full_access_mode"):
+        api.copy_path("README.md", str(outside_copy))
+
+    project.serena_config.full_access_mode = True
+    api.copy_path("README.md", str(outside_copy))
+    assert outside_copy.read_text(encoding="utf-8") == "# readme\n"
+
+    api.move_path(str(outside_copy), str(outside_moved))
+    assert outside_moved.exists() and not outside_copy.exists()
+
+    api.delete_path(str(outside_moved))
+    assert not outside_moved.exists()
+
+
+def test_copy_directory_into_itself_is_rejected(api: FsApi) -> None:
+    with pytest.raises(ValueError, match="inside source directory"):
+        api.copy_path("src", "src/backup")
 
 
 def test_list_dir_and_find_file(api: FsApi) -> None:

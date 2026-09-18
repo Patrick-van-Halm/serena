@@ -9,7 +9,7 @@ File and file system-related tools, specifically for
 
 from typing import TYPE_CHECKING, Literal, cast
 
-from serena.tools import EditingToolWithDiagnostics, Tool, ToolMarkerOptional
+from serena.tools import EditingToolWithDiagnostics, Tool, ToolMarkerCanEdit, ToolMarkerOptional
 
 if TYPE_CHECKING:
     from serena.repl.api.edit_api import EditApi
@@ -117,6 +117,56 @@ class FindFileTool(Tool, FsApiMixin):
         :return: a JSON object with the list of matching files
         """
         return self._to_json({"files": self._api().find_file(file_mask, relative_path)})
+
+
+class DeletePathTool(Tool, ToolMarkerCanEdit, FsApiMixin):
+    """
+    Deletes a file, symlink, or directory. Outside-project paths require full_access_mode.
+    """
+
+    def apply(self, relative_path: str, recursive: bool = False) -> str:
+        """
+        Delete a filesystem path.
+
+        :param relative_path: path to delete; outside-project paths require full_access_mode
+        :param recursive: set true to delete a non-empty directory recursively
+        :return: a success message
+        """
+        return self._api().delete_path(relative_path, recursive)
+
+
+class CopyPathTool(Tool, ToolMarkerCanEdit, FsApiMixin):
+    """
+    Copies a file, symlink, or directory. Outside-project paths require full_access_mode.
+    """
+
+    def apply(self, source_path: str, destination_path: str, overwrite: bool = False) -> str:
+        """
+        Copy a filesystem path to an exact destination.
+
+        :param source_path: source path; outside-project paths require full_access_mode
+        :param destination_path: exact destination path; outside-project paths require full_access_mode
+        :param overwrite: whether an existing destination may be replaced
+        :return: a success message
+        """
+        return self._api().copy_path(source_path, destination_path, overwrite)
+
+
+class MovePathTool(Tool, ToolMarkerCanEdit, FsApiMixin):
+    """
+    Moves or renames a file, symlink, or directory. Outside-project paths require full_access_mode.
+    """
+
+    def apply(self, source_path: str, destination_path: str, overwrite: bool = False) -> str:
+        """
+        Move or rename a filesystem path to an exact destination.
+
+        :param source_path: source path; outside-project paths require full_access_mode
+        :param destination_path: exact destination path; outside-project paths require full_access_mode
+        :param overwrite: whether an existing destination may be replaced
+        :return: a success message
+        """
+        return self._api().move_path(source_path, destination_path, overwrite)
 
 
 class ReplaceContentTool(EditingToolWithDiagnostics, EditApiMixin):

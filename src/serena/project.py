@@ -657,6 +657,11 @@ class Project(ToStringMixin):
             log.info("Removing and stopping the language server for language %s ...", ls_id.get_key())
             self.language_server_manager.remove_language_server(ls_id)
 
+    def mark_file_system_dirty(self) -> None:
+        """Marks Serena's filesystem freshness snapshot stale after a direct filesystem mutation."""
+        if self.language_server_manager:
+            self.language_server_manager.mark_file_system_dirty()
+
     def ls_sync_file_system_changes(self) -> int:
         """
         Synchronizes file system changes with the project's associated language server(s), if applicable

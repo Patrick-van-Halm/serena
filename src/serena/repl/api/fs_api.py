@@ -4,12 +4,22 @@ The implementation of operations on the project's files.
 """
 
 import os
+import shutil
 from collections import defaultdict
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from serena.tools import CreateTextFileTool, FindFileTool, ListDirTool, ReadFileTool, SearchForPatternTool
+from serena.tools import (
+    CopyPathTool,
+    CreateTextFileTool,
+    DeletePathTool,
+    FindFileTool,
+    ListDirTool,
+    MovePathTool,
+    ReadFileTool,
+    SearchForPatternTool,
+)
 from serena.util.file_system import scan_directory
 from serena.util.text_utils import MatchedConsecutiveLines
 
@@ -178,6 +188,62 @@ class FsApi(FacadeApi):
             ],
         )
 
+    def _resolve_fs_path(self, path: str) -> Path:
+        """Validate a path against the active-project boundary and return an absolute lexical path."""
+        project = self._get_project()
+        project.validate_relative_path(path)
+        return Path(os.path.abspath(os.path.join(project.project_root, path)))
+
+    def _is_project_root(self, path: Path) -> bool:
+        root = Path(os.path.abspath(self._get_project().project_root))
+        return os.path.normcase(str(path)) == os.path.normcase(str(root))
+
+    @staticmethod
+    def _path_exists(path: Path) -> bool:
+        # Path.exists() follows symlinks and returns False for a broken symlink, which is
+        # still a real filesystem entry that delete/move/copy should be able to address.
+        return os.path.lexists(path)
+
+    @staticmethod
+    def _remove_path(path: Path, recursive: bool) -> str:
+        if path.is_symlink() or not path.is_dir():
+            path.unlink()
+            return "file"
+
+        if not recursive:
+            if next(path.iterdir(), None) is not None:
+                raise ValueError(f"Directory is not empty: {path}. Pass recursive=True to delete it recursively.")
+            path.rmdir()
+        else:
+            shutil.rmtree(path)
+        return "directory"
+
+    def _validate_copy_move_destination(self, source: Path, destination: Path, overwrite: bool) -> None:
+        source_real = source.resolve(strict=False)
+        destination_real = destination.resolve(strict=False)
+        if source_real == destination_real:
+            raise ValueError("Source and destination refer to the same path.")
+
+        # Never recursively copy/move a real directory into one of its descendants.
+        if source.is_dir() and not source.is_symlink() and destination_real.is_relative_to(source_real):
+            raise ValueError(f"Destination {destination} is inside source directory {source}.")
+
+        if overwrite and self._path_exists(destination) and destination.is_dir() and not destination.is_symlink():
+            destination_existing_real = destination.resolve()
+            if source_real.is_relative_to(destination_existing_real):
+                raise ValueError(f"Refusing to overwrite destination {destination}: it contains the source path.")
+            project_root_real = Path(self._get_project().project_root).resolve()
+            if project_root_real == destination_existing_real or project_root_real.is_relative_to(destination_existing_real):
+                raise ValueError(f"Refusing to overwrite destination {destination}: it contains the active project root.")
+
+    def _prepare_destination(self, source: Path, destination: Path, overwrite: bool) -> None:
+        self._validate_copy_move_destination(source, destination, overwrite)
+        if self._path_exists(destination):
+            if not overwrite:
+                raise FileExistsError(f"Destination already exists: {destination}")
+            self._remove_path(destination, recursive=True)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
     @facade_method(corresponding_tool=ReadFileTool)
     def read_file(self, relative_path: str, start_line: int = 0, end_line: int | None = None, max_answer_chars: int = -1) -> FileContent:
         """
@@ -217,10 +283,91 @@ class FsApi(FacadeApi):
         # write the file
         abs_path.parent.mkdir(parents=True, exist_ok=True)
         abs_path.write_text(content, encoding=project.project_config.encoding, newline=project.line_ending.newline_str)
+        project.mark_file_system_dirty()
         answer = f"File created: {relative_path}."
         if will_overwrite_existing:
             answer += " Overwrote existing file."
         return answer
+
+    @facade_method(can_edit=True, corresponding_tool=DeletePathTool)
+    def delete_path(self, relative_path: str, recursive: bool = False) -> str:
+        """
+        Deletes a file, symlink, or directory.
+
+        Directories must be empty unless recursive=True. The active project root itself is
+        never deleted through this API.
+
+        :param relative_path: path to delete; outside-project paths require full_access_mode
+        :param recursive: whether a non-empty directory may be deleted recursively
+        :return: a message indicating what was deleted
+        """
+        project = self._get_project()
+        path = self._resolve_fs_path(relative_path)
+        if self._is_project_root(path):
+            raise ValueError("Refusing to delete the active project root.")
+        if not self._path_exists(path):
+            raise FileNotFoundError(f"Path not found: {relative_path}")
+
+        kind = self._remove_path(path, recursive=recursive)
+        project.mark_file_system_dirty()
+        return f"Deleted {kind}: {relative_path}."
+
+    @facade_method(can_edit=True, corresponding_tool=CopyPathTool)
+    def copy_path(self, source_path: str, destination_path: str, overwrite: bool = False) -> str:
+        """
+        Copies a file, symlink, or directory to an exact destination path.
+
+        Directory copies are recursive and preserve symlinks. Existing destinations are
+        rejected unless overwrite=True.
+
+        :param source_path: source path; outside-project paths require full_access_mode
+        :param destination_path: exact destination path; outside-project paths require full_access_mode
+        :param overwrite: whether an existing destination may be replaced
+        :return: a message indicating success
+        """
+        project = self._get_project()
+        source = self._resolve_fs_path(source_path)
+        destination = self._resolve_fs_path(destination_path)
+        if not self._path_exists(source):
+            raise FileNotFoundError(f"Source path not found: {source_path}")
+
+        self._prepare_destination(source, destination, overwrite)
+        if source.is_dir() and not source.is_symlink():
+            shutil.copytree(source, destination, symlinks=True, copy_function=shutil.copy2)
+            kind = "directory"
+        else:
+            shutil.copy2(source, destination, follow_symlinks=False)
+            kind = "path"
+
+        project.mark_file_system_dirty()
+        return f"Copied {kind}: {source_path} -> {destination_path}."
+
+    @facade_method(can_edit=True, corresponding_tool=MovePathTool)
+    def move_path(self, source_path: str, destination_path: str, overwrite: bool = False) -> str:
+        """
+        Moves or renames a file, symlink, or directory to an exact destination path.
+
+        Cross-filesystem moves are supported through shutil.move. Existing destinations are
+        rejected unless overwrite=True. The active project root itself is never moved.
+
+        :param source_path: source path; outside-project paths require full_access_mode
+        :param destination_path: exact destination path; outside-project paths require full_access_mode
+        :param overwrite: whether an existing destination may be replaced
+        :return: a message indicating success
+        """
+        project = self._get_project()
+        source = self._resolve_fs_path(source_path)
+        destination = self._resolve_fs_path(destination_path)
+        if self._is_project_root(source):
+            raise ValueError("Refusing to move the active project root.")
+        if not self._path_exists(source):
+            raise FileNotFoundError(f"Source path not found: {source_path}")
+
+        self._prepare_destination(source, destination, overwrite)
+        shutil.move(str(source), str(destination))
+
+        project.mark_file_system_dirty()
+        return f"Moved path: {source_path} -> {destination_path}."
 
     @facade_method(corresponding_tool=ListDirTool)
     def list_dir(

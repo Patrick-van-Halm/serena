@@ -297,6 +297,10 @@ class LanguageServerManager:
     def has_suitable_ls_for_file(self, relative_file_path: str) -> bool:
         return self._get_suitable_language_server(relative_file_path) is not None
 
+    def mark_file_system_dirty(self) -> None:
+        """Force the next freshness check to bypass its debounce interval."""
+        self._file_change_notifier.mark_dirty()
+
     def sync_file_system_changes(self) -> int:
         """
         Polls the file system for changes to source files and notifies the language servers of any changes
@@ -325,11 +329,15 @@ class LanguageServerFileChangeNotifier:
         self._freshness_lock = threading.Lock()
         self._poll_lock = threading.Lock()
         self._last_poll_completed_at: float | None = None
+        self._dirty = threading.Event()
 
         if initial_poll:
             # Establish the baseline for the first poll; no notifications are sent on the first call.
             with LogTime("Initialising file change notifier (polling for baseline)"):
                 self.poll_and_notify(force=True)
+
+    def mark_dirty(self) -> None:
+        self._dirty.set()
 
     def poll_and_notify(self, force: bool = False) -> int:
         """
@@ -354,12 +362,16 @@ class LanguageServerFileChangeNotifier:
             now = monotonic()
             if (
                 not force
+                and not self._dirty.is_set()
                 and self._last_poll_completed_at is not None
                 and now - self._last_poll_completed_at < self.POLL_DEBOUNCE_SECONDS
             ):
                 log.debug("Skipping file-system freshness poll within debounce interval")
                 return 0
 
+            # Clear before scanning. A mutation that occurs during the scan sets the event
+            # again and therefore forces one more pass on the next symbolic operation.
+            self._dirty.clear()
             current: dict[str, int] = {}
             for rel_path in self._project.gather_source_files():
                 try:
