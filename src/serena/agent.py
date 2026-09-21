@@ -1172,6 +1172,10 @@ class SerenaAgent:
         """
         return self._session_registry.create_session()
 
+    def close_session(self, session_id: str) -> bool:
+        """Release conversation-scoped state, especially persistent REPL variables."""
+        return self._session_registry.remove_session(session_id)
+
     def get_session(self, session_id: str) -> SerenaSession:
         """
         :param session_id: the session id (as supplied by the LLM)

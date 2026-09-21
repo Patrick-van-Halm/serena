@@ -67,12 +67,29 @@ class SessionRegistry:
             self._sessions[session_id] = session
             log.info("Created session %s (%d sessions)", session_id, len(self._sessions))
             while len(self._sessions) > self._max_sessions:
-                evicted_id, _ = self._sessions.popitem(last=False)
+                evicted_id, evicted = self._sessions.popitem(last=False)
+                self._dispose_session(evicted)
                 log.info("Evicted session %s (session limit)", evicted_id)
         else:
             self._sessions.move_to_end(session_id)
         session.last_access_time = time.time()
         return session
+
+    @staticmethod
+    def _dispose_session(session: SerenaSession) -> None:
+        # Clear potentially very large REPL variables immediately instead of waiting for
+        # cyclic GC after the registry drops its final reference.
+        session.repl_namespace.clear()
+        session.described_type_names.clear()
+
+    def remove_session(self, session_id: str) -> bool:
+        """Remove a session immediately, releasing its persistent REPL namespace."""
+        session = self._sessions.pop(session_id, None)
+        if session is None:
+            return False
+        self._dispose_session(session)
+        log.info("Removed session %s", session_id)
+        return True
 
     def _evict_idle_sessions(self) -> None:
         # sessions are ordered by last access, so the idle ones are at the front
@@ -82,4 +99,5 @@ class SessionRegistry:
             if now - oldest.last_access_time <= self._idle_ttl_seconds:
                 break
             del self._sessions[oldest_id]
+            self._dispose_session(oldest)
             log.info("Evicted session %s (idle)", oldest_id)

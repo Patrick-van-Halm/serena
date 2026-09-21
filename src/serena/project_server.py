@@ -312,11 +312,14 @@ class ProjectServer:
 
     def _close_mcp_bridge(self, req: MCPBridgeCloseRequest) -> None:
         key = self._mcp_runtime_key(req.project_root, req.context)
+        runtime = None
         with self._mcp_runtimes_lock:
             runtime = self._mcp_runtimes.get(key)
             if runtime is not None:
                 runtime.bridge_sessions.pop(req.session_id, None)
                 runtime.last_access = time.monotonic()
+        if runtime is not None:
+            runtime.agent.close_session(req.session_id)
 
     def _call_mcp_tool(self, req: MCPToolCallRequest) -> str:
         runtime = self._get_mcp_runtime(req.project_root, req.context)
@@ -347,9 +350,11 @@ class ProjectServer:
     def _evict_mcp_runtimes(self) -> None:
         now = time.monotonic()
         evicted: list[MCPProjectRuntime] = []
+        stale_session_owners: list[tuple[MCPProjectRuntime, str]] = []
         with self._mcp_runtimes_lock:
             # Bridge processes renew short leases in the background. Drop stale leases so
-            # a crashed/killed Codex bridge cannot pin a project runtime forever.
+            # a crashed/killed Codex bridge cannot pin a project runtime or its REPL
+            # namespace forever.
             for runtime in self._mcp_runtimes.values():
                 stale_sessions = [
                     session_id
@@ -358,6 +363,7 @@ class ProjectServer:
                 ]
                 for session_id in stale_sessions:
                     runtime.bridge_sessions.pop(session_id, None)
+                    stale_session_owners.append((runtime, session_id))
 
             inactive = [
                 (key, runtime)
@@ -389,6 +395,12 @@ class ProjectServer:
                     key, runtime = remaining_inactive.pop(0)
                     self._mcp_runtimes.pop(key, None)
                     evicted.append(runtime)
+
+        for runtime, session_id in stale_session_owners:
+            try:
+                runtime.agent.close_session(session_id)
+            except Exception as e:
+                log.debug("Failed to release stale shared MCP session %s: %s", session_id, e)
 
         for runtime in evicted:
             log.info("Evicting shared MCP runtime for %s (context=%s)", runtime.project_root, runtime.context)
