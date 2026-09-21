@@ -42,3 +42,15 @@ def test_headless_agent_module_does_not_eagerly_import_dashboard_stack(monkeypat
         "assert 'PIL' not in sys.modules"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
+
+
+
+def test_importing_shared_mcp_bridge_does_not_load_flask_or_dashboard() -> None:
+    code = (
+        "import sys; import serena.mcp_bridge; "
+        "assert 'flask' not in sys.modules; "
+        "assert 'serena.dashboard' not in sys.modules; "
+        "assert 'webview' not in sys.modules; "
+        "assert 'PIL' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)

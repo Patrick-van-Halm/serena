@@ -25,7 +25,7 @@ from sensai.util import logging
 from serena import __version__
 from serena.config.context_mode import SerenaAgentContext
 from serena.config.serena_config import SerenaConfig, SerenaPaths
-from serena.project_server import ProjectServerClient
+from serena.shared_mcp_client import SharedMCPDaemonClient
 from serena.tools import Tool, ToolCallError, ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -204,10 +204,10 @@ def _spawn_shared_daemon() -> subprocess.Popen:
     return subprocess.Popen(_daemon_command(), **kwargs)
 
 
-def ensure_shared_daemon(serena_config: SerenaConfig, startup_timeout: float = 30.0) -> ProjectServerClient:
+def ensure_shared_daemon(serena_config: SerenaConfig, startup_timeout: float = 30.0) -> SharedMCPDaemonClient:
     """Return the singleton daemon client, starting the daemon if necessary."""
     try:
-        return ProjectServerClient(serena_config)
+        return SharedMCPDaemonClient(serena_config)
     except ConnectionError:
         pass
 
@@ -218,7 +218,7 @@ def ensure_shared_daemon(serena_config: SerenaConfig, startup_timeout: float = 3
     with lock:
         # Another bridge may have completed startup while this process waited.
         try:
-            return ProjectServerClient(serena_config)
+            return SharedMCPDaemonClient(serena_config)
         except ConnectionError:
             pass
 
@@ -229,7 +229,7 @@ def ensure_shared_daemon(serena_config: SerenaConfig, startup_timeout: float = 3
             if process.poll() is not None:
                 raise ConnectionError(f"Shared Serena daemon exited during startup with code {process.returncode}")
             try:
-                return ProjectServerClient(serena_config)
+                return SharedMCPDaemonClient(serena_config)
             except ConnectionError as e:
                 last_error = e
                 time.sleep(0.1)
@@ -247,7 +247,7 @@ class SerenaMCPBridge:
 
         config = SerenaConfig.from_config_file()
         self.client = ensure_shared_daemon(config)
-        runtime_info = self.client.get_mcp_runtime_info(self.project_root, self.context.name, session_id=self.session_id)
+        runtime_info = self.client.get_runtime_info(self.project_root, self.context.name, session_id=self.session_id)
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop,
@@ -297,7 +297,7 @@ class SerenaMCPBridge:
             **kwargs,
         ) -> str:
             try:
-                return bridge.client.call_mcp_tool(
+                return bridge.client.call_tool(
                     project_root=bridge.project_root,
                     context=bridge.context.name,
                     session_id=bridge.session_id,
@@ -322,7 +322,7 @@ class SerenaMCPBridge:
     def _heartbeat_loop(self) -> None:
         while not self._heartbeat_stop.wait(60.0):
             try:
-                self.client.heartbeat_mcp_bridge(
+                self.client.heartbeat_bridge(
                     project_root=self.project_root,
                     context=self.context.name,
                     session_id=self.session_id,
@@ -334,7 +334,7 @@ class SerenaMCPBridge:
                 log.debug("Shared MCP bridge heartbeat failed; reconnecting: %s", e)
                 try:
                     client = ensure_shared_daemon(SerenaConfig.from_config_file())
-                    client.get_mcp_runtime_info(
+                    client.get_runtime_info(
                         self.project_root,
                         self.context.name,
                         session_id=self.session_id,
@@ -348,7 +348,7 @@ class SerenaMCPBridge:
             self.server.run(transport="stdio")
         finally:
             self._heartbeat_stop.set()
-            self.client.close_mcp_bridge(
+            self.client.close_bridge(
                 project_root=self.project_root,
                 context=self.context.name,
                 session_id=self.session_id,
