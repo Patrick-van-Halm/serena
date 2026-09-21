@@ -56,3 +56,11 @@ def test_shell_absolute_cwd_remains_unrestricted(api: ShellApi, tmp_path: Path) 
 
     output = api.execute_shell_command(print_cwd, cwd=str(outside_dir))
     assert Path(output.stdout.strip()).resolve() == outside_dir.resolve()
+
+
+
+def test_execute_shell_command_timeout_terminates_process(api: ShellApi) -> None:
+    api._agent.serena_config.tool_timeout = 0.2
+    command = f'"{sys.executable}" -c "import time; time.sleep(30)"'
+    with pytest.raises(TimeoutError, match="timed out"):
+        api.execute_shell_command(command)

@@ -57,70 +57,62 @@ def test_task_executor_exception(executor):
 
 def test_task_executor_cancel_current(executor):
     """
-    Tests that tasks that are cancelled are handled correctly, i.e. that
-      * subsequent tasks are executed as soon as cancellation ensues.
-      * the cancelled task raises CancelledError when result() is called.
+    Cancelling the public future must not allow a still-running task to overlap
+    the next task; the executor remains linear until the underlying thread exits.
     """
-    start_time = time.time()
-    future1 = executor.issue_task(Task(10).run, name="task1")
-    future2 = executor.issue_task(Task(1).run, name="task2")
-    time.sleep(1)
+    task1 = Task(0.25)
+    task2 = Task(0.01)
+    future1 = executor.issue_task(task1.run, name="task1")
+    future2 = executor.issue_task(task2.run, name="task2")
+    time.sleep(0.05)
     future1.cancel()
-    assert future2.result() is True
-    end_time = time.time()
-    assert (end_time - start_time) < 9, "Cancelled task did not stop in time"
-    have_cancelled_error = False
-    try:
+
+    with pytest.raises(Exception) as exc:
         future1.result()
-    except Exception as e:
-        assert e.__class__.__name__ == "CancelledError"
-        have_cancelled_error = True
-    assert have_cancelled_error
+    assert exc.value.__class__.__name__ == "CancelledError"
+
+    time.sleep(0.05)
+    assert not task2.did_run
+    assert future2.result(timeout=1) is True
+    assert task2.did_run
 
 
 def test_task_executor_cancel_future(executor):
-    """
-    Tests that when a future task is cancelled, it is never run at all
-    """
-    task1 = Task(10)
-    task2 = Task(1)
+    """A queued task cancelled before dispatch is never run."""
+    task1 = Task(0.2)
+    task2 = Task(0.01)
     future1 = executor.issue_task(task1.run, name="task1")
     future2 = executor.issue_task(task2.run, name="task2")
-    time.sleep(1)
+    time.sleep(0.05)
     future2.cancel()
-    future1.cancel()
-    try:
+    assert future1.result(timeout=1) is True
+    with pytest.raises(Exception) as exc:
         future2.result()
-    except:
-        pass
-    assert task1.did_run
+    assert exc.value.__class__.__name__ == "CancelledError"
     assert not task2.did_run
 
 
 def test_task_executor_cancellation_via_task_info(executor):
-    start_time = time.time()
-    executor.issue_task(Task(10).run, "task1")
-    executor.issue_task(Task(10).run, "task2")
+    first = Task(0.2)
+    second = Task(0.01)
+    executor.issue_task(first.run, "task1")
+    executor.issue_task(second.run, "task2")
+    time.sleep(0.03)
     task_infos = executor.get_current_tasks()
     task_infos2 = executor.get_current_tasks()
 
-    # test expected tasks
     assert len(task_infos) == 2
     assert "task1" in task_infos[0].name
     assert "task2" in task_infos[1].name
-
-    # test task identifiers being stable
     assert task_infos2[0].task_id == task_infos[0].task_id
 
-    # test cancellation
     task_infos[0].cancel()
-    time.sleep(0.5)
+    time.sleep(0.05)
     task_infos3 = executor.get_current_tasks()
-    assert len(task_infos3) == 1  # Cancelled task is gone from the queue
-    task_infos3[0].cancel()
-    try:
-        task_infos3[0].future.result()
-    except:
-        pass
-    end_time = time.time()
-    assert (end_time - start_time) < 9, "Cancelled task did not stop in time"
+    # The cancelled future remains the current underlying execution until its
+    # thread exits, so it cannot become a detached concurrent task.
+    assert len(task_infos3) == 2
+    assert task_infos3[0].future.cancelled()
+
+    time.sleep(0.25)
+    assert second.did_run

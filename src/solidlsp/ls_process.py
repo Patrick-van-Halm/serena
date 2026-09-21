@@ -353,7 +353,20 @@ class LanguageServerInterface(ABC):
         self._send_payload(make_request(method, request_id, params))
 
         log.debug("Waiting for response to request %s with params:\n%s", method, params)
-        result = request.get_result(timeout=self._request_timeout)
+        try:
+            result = request.get_result(timeout=self._request_timeout)
+        except TimeoutError:
+            # Do not retain a Request indefinitely when a server never answers. Also send
+            # the standard LSP cancellation notification so the server can release its own
+            # work/memory for the abandoned request.
+            with self._response_handlers_lock:
+                if self._pending_requests.get(request_id) is request:
+                    self._pending_requests.pop(request_id, None)
+            try:
+                self.send_notification("$/cancelRequest", {"id": request_id})
+            except Exception as e:
+                log.debug("Failed to send cancellation for timed-out request %s: %s", request_id, e)
+            raise
         log.debug("Completed: %s", request)
         return result
 

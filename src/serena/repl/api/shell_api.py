@@ -84,5 +84,11 @@ class ShellApi(FacadeApi):
                     f"Specified a relative working directory ({cwd}), but the resulting path is not a directory: {_cwd}"
                 )
 
-        result = execute_shell_command(command, cwd=_cwd, capture_stderr=capture_stderr)
+        configured_timeout = getattr(self._agent.serena_config, "tool_timeout", None)
+        shell_timeout = None
+        if isinstance(configured_timeout, int | float):
+            # Leave the outer tool executor a small margin to receive the exception after
+            # this function has terminated the child process tree.
+            shell_timeout = max(float(configured_timeout) - 1.0, 0.1)
+        result = execute_shell_command(command, cwd=_cwd, capture_stderr=capture_stderr, timeout=shell_timeout)
         return ShellCommandOutput(result, ShellCommandOutputRenderer(self._agent, max_answer_chars))

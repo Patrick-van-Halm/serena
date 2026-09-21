@@ -2,6 +2,7 @@
 
 import concurrent.futures
 import threading
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -25,7 +26,7 @@ class TaskExecutor:
         """
         self._task_executor_lock = threading.Lock()
         self._task_executor_condition = threading.Condition(self._task_executor_lock)
-        self._task_executor_queue: list[TaskExecutor.Task] = []
+        self._task_executor_queue: deque[TaskExecutor.Task] = deque()
         self._task_executor_thread = Thread(target=self._process_task_queue, name=name, daemon=True)
         self._task_executor_task_index = 1
         self._task_executor_current_task: TaskExecutor.Task | None = None
@@ -46,33 +47,50 @@ class TaskExecutor:
             self.future: concurrent.futures.Future = concurrent.futures.Future()
             self.logged = logged
             self.timeout = timeout
-            self._function = function
+            self._function: Callable[[], T] | None = function
+            self._finished_event = threading.Event()
+            self._thread: Thread | None = None
 
         def _tostring_includes(self) -> list[str]:
             return ["name"]
 
         def start(self) -> None:
             """
-            Executes the task in a separate thread, setting the result or exception on the future.
+            Executes the task in a separate daemon thread.
+
+            Cancellation marks the public future immediately, but the dispatcher does not
+            run another task until this thread really exits. This preserves the executor's
+            linear-execution guarantee and prevents timed-out work from accumulating as
+            detached threads retaining agent/project state.
             """
+            if self.future.done():
+                if self.logged:
+                    log.info(f"Task {self.name} was already completed/cancelled; skipping execution")
+                self._function = None
+                self._finished_event.set()
+                return
 
             def run_task() -> None:
                 try:
-                    if self.future.done():
-                        if self.logged:
-                            log.info(f"Task {self.name} was already completed/cancelled; skipping execution")
+                    function = self._function
+                    if function is None:
                         return
                     with LogTime(self.name, logger=log, enabled=self.logged):
-                        result = self._function()
+                        result = function()
                         if not self.future.done():
                             self.future.set_result(result)
                 except Exception as e:
                     if not self.future.done():
                         log.error(f"Error during execution of {self.name}: {e}", exc_info=e)
                         self.future.set_exception(e)
+                finally:
+                    # Release closures (which commonly capture the agent, project and large
+                    # arguments/results) as soon as the underlying work actually finishes.
+                    self._function = None
+                    self._finished_event.set()
 
-            thread = Thread(target=run_task, name=self.name)
-            thread.start()
+            self._thread = Thread(target=run_task, name=self.name, daemon=True)
+            self._thread.start()
 
         def is_done(self) -> bool:
             """
@@ -109,20 +127,16 @@ class TaskExecutor:
             """
             self.future.cancel()
 
-        def wait_until_done(self) -> bool:
+        def wait_until_done(self, timeout: float | None = None) -> bool:
             """
-            Waits until the task is done or its timeout is reached.
-            The task is done if it either completed successfully, failed with an exception, or was cancelled.
+            Wait until the underlying execution thread has actually finished.
 
-            :return: True if the task is done (successfully, with failure, or via cancellation), False if the timeout was reached
+            Future cancellation alone is deliberately not considered completion: Python
+            cannot safely kill an arbitrary running thread, so allowing the dispatcher to
+            continue at that point would accumulate abandoned concurrent work.
             """
-            try:
-                self.future.result(timeout=self.timeout)
-            except concurrent.futures.TimeoutError:
-                return False
-            except:
-                pass
-            return True
+            effective_timeout = self.timeout if timeout is None else timeout
+            return self._finished_event.wait(timeout=effective_timeout)
 
     def _process_task_queue(self) -> None:
         while True:
@@ -130,7 +144,7 @@ class TaskExecutor:
             with self._task_executor_condition:
                 while not self._task_executor_queue:
                     self._task_executor_condition.wait()
-                task = self._task_executor_queue.pop(0)
+                task = self._task_executor_queue.popleft()
                 self._task_executor_current_task = task
 
             # start task execution asynchronously
@@ -138,10 +152,18 @@ class TaskExecutor:
                 log.info("Starting execution of %s", task.name)
             task.start()
 
-            # wait for task completion
+            # Wait for real execution completion. If the task exceeds its timeout, cancel
+            # the public future but keep the dispatcher parked until the underlying thread
+            # exits, preventing runaway timed-out threads from piling up.
             is_done = task.wait_until_done()
             if not is_done:
-                log.warning("Task %s did not complete within the timeout of %s seconds; continuing ...", task.name, task.timeout)
+                task.cancel()
+                log.warning(
+                    "Task %s did not complete within the timeout of %s seconds; waiting for underlying work to exit before continuing",
+                    task.name,
+                    task.timeout,
+                )
+                task.wait_until_done(timeout=None)
             with self._task_executor_lock:
                 self._task_executor_current_task = None
                 if task.logged:
