@@ -10,7 +10,7 @@ import shutil
 import threading
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Callable, Hashable, Iterator, Sequence
+from collections.abc import Callable, Hashable, Iterator
 from contextlib import ExitStack, contextmanager
 from copy import copy
 from dataclasses import dataclass
@@ -20,7 +20,7 @@ from typing import Any, Self, Union, cast
 
 import pathspec
 from sensai.util.helper import mark_used
-from sensai.util.pickle import getstate, load_pickle
+from sensai.util.pickle import load_pickle
 from sensai.util.string import ToStringMixin
 
 from serena.util.file_system import match_path
@@ -235,95 +235,93 @@ class LSPFileBuffer:
         return self.contents.split("\n")
 
 
-class _LazyTextLines(Sequence[str]):
-    """Shared lazy line buffer for symbol bodies from one source file."""
+@dataclass(frozen=True, slots=True)
+class _SymbolBodySource:
+    """Small shared descriptor for lazily reading symbol text from disk."""
 
-    def __init__(self, content: str) -> None:
-        self._content = content
-        self._lines: list[str] | None = None
+    abs_path: Path
+    encoding: str
 
-    def _get_lines(self) -> list[str]:
-        if self._lines is None:
-            self._lines = self._content.split("\n")
-            # Once materialized, release the duplicate contiguous source buffer.
-            self._content = ""
-        return self._lines
+    def read_range(self, start_line: int, start_col: int, end_line: int, end_col: int) -> str:
+        selected: list[str] = []
+        current_line = 0
+        reached_eof = True
 
-    def __len__(self) -> int:
-        return len(self._get_lines())
+        with self.abs_path.open("r", encoding=self.encoding) as f:
+            for raw_line in f:
+                line = raw_line[:-1] if raw_line.endswith("\n") else raw_line
+                if current_line >= start_line:
+                    selected.append(line)
+                if current_line >= end_line:
+                    reached_eof = False
+                    break
+                current_line += 1
 
-    def __getitem__(self, index: int | slice) -> str | list[str]:
-        return self._get_lines()[index]
+        if not selected:
+            raise InvalidTextLocationError(
+                f"Symbol range start (line {start_line}, col {start_col}) is out of bounds for {self.abs_path}"
+            )
+
+        actual_end_line = end_line
+        actual_end_col = end_col
+        if reached_eof and current_line < end_line:
+            # LSP convention: a whole-file range may end at line_count, column 0.
+            if current_line + 1 == end_line and end_col == 0:
+                actual_end_line = current_line
+                actual_end_col = len(selected[-1])
+            else:
+                raise InvalidTextLocationError(
+                    f"Symbol range end (line {end_line}, col {end_col}) is out of bounds for {self.abs_path}"
+                )
+
+        end_idx = actual_end_line - start_line
+        if end_idx >= len(selected):
+            if end_idx == len(selected) and actual_end_col == 0:
+                end_idx -= 1
+                actual_end_col = len(selected[end_idx])
+            else:
+                raise InvalidTextLocationError(
+                    f"Symbol range end (line {end_line}, col {end_col}) is out of bounds for {self.abs_path}"
+                )
+
+        selected = selected[: end_idx + 1]
+        selected[0] = selected[0][start_col:]
+        selected[-1] = selected[-1][:actual_end_col]
+        return "\n".join(selected)
 
 
 class SymbolBody(ToStringMixin):
     """
-    Representation of the body of a symbol, which allows the extraction of the symbol's text
-    from the lines of the file it is defined in.
+    Source-free cached representation of a symbol body.
 
-    Instances that share the same lines buffer are memory-efficient,
-    using only 4 integers and a reference to the lines buffer from which the text can be extracted,
-    i.e. a core representation of only about 40 bytes per body.
+    The processed symbol cache retains only a shared path/encoding descriptor plus the
+    four LSP range integers. Source text is read only when get_text is requested and is
+    not retained afterward.
     """
 
-    def __init__(self, lines: Sequence[str], start_line: int, start_col: int, end_line: int, end_col: int) -> None:
-        self._lines = lines
+    __slots__ = ("_source", "_start_line", "_start_col", "_end_line", "_end_col")
+
+    def __init__(self, source: _SymbolBodySource, start_line: int, start_col: int, end_line: int, end_col: int) -> None:
+        self._source = source
         self._start_line = start_line
         self._start_col = start_col
         self._end_line = end_line
         self._end_col = end_col
 
     def _tostring_excludes(self) -> list[str]:
-        return ["_lines"]
+        return ["_source"]
 
     def get_text(self) -> str:
-        end_line = self._end_line
-        end_col = self._end_col
-        if end_line >= len(self._lines):
-            if end_line == len(self._lines) and end_col == 0:
-                # LSP convention: a range covering whole lines through EOF sometimes ends
-                # at the start of the following, non-existent line (exactly one line past
-                # the last valid index, at column 0). That is well-defined: it means
-                # "through EOF", so treat it as ending at the end of the actual last line.
-                end_line = len(self._lines) - 1
-                end_col = len(self._lines[end_line])
-            else:
-                # Any other out-of-range end position (further past EOF, or exactly one
-                # line past EOF but not at column 0) is not the well-defined convention
-                # above; applying the same correction there would silently assume that
-                # a column meant for a nonexistent line still applies to the corrected
-                # one, which can produce a garbage body. Reject it instead of guessing.
-                raise InvalidTextLocationError(
-                    f"Symbol range end (line {self._end_line}, col {self._end_col}) is out of bounds "
-                    f"for a file with {len(self._lines)} lines"
-                )
-
-        # extract relevant lines
-        symbol_body = "\n".join(self._lines[self._start_line : end_line + 1])
-
-        # remove leading content from the first line
-        symbol_body = symbol_body[self._start_col :]
-
-        # remove trailing content from the last line
-        last_line = self._lines[end_line]
-        trailing_length = len(last_line) - end_col
-        if trailing_length > 0:
-            symbol_body = symbol_body[: -(len(last_line) - end_col)]
-
-        return symbol_body
+        return self._source.read_range(self._start_line, self._start_col, self._end_line, self._end_col)
 
 
 class SymbolBodyFactory:
-    """
-    A factory for the creation of SymbolBody instances from symbols dictionaries.
-    Instances created from the same factory instance are memory-efficient, as they share
-    the same lines buffer.
-    """
+    """Creates symbol bodies sharing one lightweight source descriptor per document."""
 
     def __init__(self, file_buffer: LSPFileBuffer):
-        # Most symbol queries only need names, kinds and locations. Keep the source as
-        # one shared string and split it only if a caller actually asks for a body.
-        self._lines = _LazyTextLines(file_buffer.contents)
+        # Do not touch file_buffer.contents here: cached symbols should never keep a
+        # second copy of the project's source text alive.
+        self._source = _SymbolBodySource(file_buffer.abs_path, file_buffer.encoding)
 
     def create_symbol_body(self, symbol: UnifiedSymbolInformation) -> SymbolBody:
         existing_body = symbol.get("body", None)
@@ -335,7 +333,7 @@ class SymbolBodyFactory:
         end_line = symbol["location"]["range"]["end"]["line"]
         start_col = symbol["location"]["range"]["start"]["character"]
         end_col = symbol["location"]["range"]["end"]["character"]
-        return SymbolBody(self._lines, start_line, start_col, end_line, end_col)
+        return SymbolBody(self._source, start_line, start_col, end_line, end_col)
 
 
 class DocumentSymbols:
@@ -343,42 +341,25 @@ class DocumentSymbols:
 
     def __init__(self, root_symbols: list[ls_types.UnifiedSymbolInformation]):
         self.root_symbols = root_symbols
-        self._all_symbols: list[ls_types.UnifiedSymbolInformation] | None = None
-
-    def __getstate__(self) -> dict:
-        return getstate(DocumentSymbols, self, transient_properties=["_all_symbols"])
 
     def iter_symbols(self) -> Iterator[ls_types.UnifiedSymbolInformation]:
-        """
-        Iterate over all symbols in the document symbol tree.
-        Yields symbols in a depth-first manner.
-        """
-        if self._all_symbols is None:
-            # Materialise the flattened view once. Symbol-location/reference paths frequently
-            # scan the same cached document several times, and rebuilding the DFS generator
-            # tree for each scan adds avoidable Python recursion and allocations.
-            all_symbols: list[ls_types.UnifiedSymbolInformation] = []
-            stack = list(reversed(self.root_symbols))
-            while stack:
-                symbol = stack.pop()
-                all_symbols.append(symbol)
-                children = symbol.get("children", [])
-                stack.extend(reversed(children))
-            self._all_symbols = all_symbols
-
-        yield from self._all_symbols
+        """Iterate over all symbols without retaining a second flattened pointer list."""
+        stack = list(reversed(self.root_symbols))
+        while stack:
+            symbol = stack.pop()
+            yield symbol
+            children = symbol.get("children", [])
+            stack.extend(reversed(children))
 
     def get_all_symbols_and_roots(self) -> tuple[list[ls_types.UnifiedSymbolInformation], list[ls_types.UnifiedSymbolInformation]]:
         """
-        This function returns all symbols in the document as a flat list and the root symbols.
-        It exists to facilitate migration from previous versions, where this was the return interface of
-        the LS method that obtained document symbols.
+        Return a transient flat list together with the root symbols.
 
-        :return: A tuple containing a list of all symbols in the document and a list of root symbols.
+        The flat list is intentionally not cached: callers that explicitly require it pay
+        for it for the duration of their operation, while long-lived document caches retain
+        only the tree itself.
         """
-        if self._all_symbols is None:
-            self._all_symbols = list(self.iter_symbols())
-        return self._all_symbols, self.root_symbols
+        return list(self.iter_symbols()), self.root_symbols
 
 
 class SolidLanguageServer(ABC):
@@ -396,7 +377,7 @@ class SolidLanguageServer(ABC):
     """
     RAW_DOCUMENT_SYMBOL_CACHE_FILENAME = "raw_document_symbols.pkl"
     RAW_DOCUMENT_SYMBOL_CACHE_FILENAME_LEGACY_FALLBACK = "document_symbols_cache_v23-06-25.pkl"
-    DOCUMENT_SYMBOL_CACHE_VERSION = 5
+    DOCUMENT_SYMBOL_CACHE_VERSION = 6
     """
     defines the version of the high-level document symbol format.
     This should be incremented whenever there is a change in the way document symbols are stored.
@@ -593,7 +574,9 @@ class SolidLanguageServer(ABC):
         ] = {}
         """maps paths to (file_signature, file_content_hash, raw_root_symbols)"""
         self._raw_document_symbols_cache_is_modified: bool = False
-        self._load_raw_document_symbols_cache()
+        self._raw_document_symbols_cache_loaded = False
+        # Raw symbols are only a fallback for rebuilding an empty processed cache.
+        # Do not eagerly deserialize that second complete object graph.
         # * high-level document symbols cache
         self._document_symbols_cache: dict[str, tuple[FileSignature, str, DocumentSymbols]] = {}
         """maps paths to (file_signature, file_content_hash, document_symbols)"""
@@ -1891,6 +1874,9 @@ class SolidLanguageServer(ABC):
         :return: the list of root symbols in the file
         """
 
+        if not self._raw_document_symbols_cache_loaded:
+            self._load_raw_document_symbols_cache()
+
         def get_cached_raw_document_symbols(cache_key: str, fd: LSPFileBuffer) -> list[SymbolInformation] | list[DocumentSymbol] | None:
             file_hash_and_result = self._raw_document_symbols_cache.get(cache_key)
             if file_hash_and_result is None:
@@ -1906,10 +1892,8 @@ class SolidLanguageServer(ABC):
                 return result
 
             if file_hash == fd.content_hash:
-                # Metadata changed but contents did not (touch/chmod/etc.). Refresh the cheap
-                # signature so subsequent lookups avoid rereading and hashing the file.
-                self._raw_document_symbols_cache[cache_key] = (fd.file_signature, file_hash, result)
-                self._raw_document_symbols_cache_is_modified = True
+                # Treat the raw cache as a read-only rebuild fallback. The processed cache
+                # gets the fresh signature; retaining a second updated tree is unnecessary.
                 log.debug("Returning cached raw document symbols for %s after hash verification", relative_file_path)
                 return result
 
@@ -1927,14 +1911,8 @@ class SolidLanguageServer(ABC):
             # no cached result, query language server
             response = self._request_raw_document_symbols(relative_file_path, file_data=fd)
 
-            # Only cache non-empty results. An empty or None response can occur when the language server
-            # has not yet finished indexing or building the project (e.g. Lean 4 before `lake build`),
-            # and caching it would permanently serve stale data even after the project is ready.
-            if response:
-                content_hash = fd.content_hash
-                self._raw_document_symbols_cache[cache_key] = (fd.file_signature, content_hash, response)
-                self._raw_document_symbols_cache_is_modified = True
-
+            # Fresh raw responses are immediately converted into the processed cache.
+            # Do not retain a duplicate raw tree in this process.
             return response
 
     def _request_raw_document_symbols(
@@ -2056,6 +2034,8 @@ class SolidLanguageServer(ABC):
         log.debug("Received %d root symbols for %s from the language server", len(root_symbols), relative_file_path)
 
         body_factory = SymbolBodyFactory(file_buffer)
+        absolute_path = os.path.join(self.repository_root_path, relative_file_path)
+        document_uri = pathlib.Path(absolute_path).as_uri()
 
         def convert_to_unified_symbol(original_symbol_dict: RawDocumentSymbol) -> ls_types.UnifiedSymbolInformation:
             """
@@ -2067,24 +2047,21 @@ class SolidLanguageServer(ABC):
             """
             # noinspection PyInvalidCast
             item = cast(ls_types.UnifiedSymbolInformation, dict(original_symbol_dict))
-            absolute_path = os.path.join(self.repository_root_path, relative_file_path)
 
-            # handle missing location and path entries
+            # All document symbols belong to this file. Reuse identical path/URI string
+            # objects across the entire tree instead of retaining one copy per symbol.
             if "location" not in item:
-                uri = pathlib.Path(absolute_path).as_uri()
                 assert "range" in item
-                tree_location = ls_types.Location(
-                    uri=uri,
+                item["location"] = ls_types.Location(
+                    uri=document_uri,
                     range=item["range"],
                     absolutePath=absolute_path,
                     relativePath=relative_file_path,
                 )
-                item["location"] = tree_location
             location = item["location"]
-            if "absolutePath" not in location:
-                location["absolutePath"] = absolute_path
-            if "relativePath" not in location:
-                location["relativePath"] = relative_file_path
+            location["uri"] = document_uri
+            location["absolutePath"] = absolute_path
+            location["relativePath"] = relative_file_path
 
             item["body"] = self.create_symbol_body(item, factory=body_factory)
 
@@ -2133,6 +2110,10 @@ class SolidLanguageServer(ABC):
         unified_root_symbols = convert_symbols_with_common_parent(root_symbols, None)
         document_symbols = DocumentSymbols(unified_root_symbols)
 
+        # Consume fallback raw entries after conversion. Their on-disk copy remains
+        # available for a future processed-cache migration, but this process retains
+        # only the processed tree.
+        self._raw_document_symbols_cache.pop(relative_file_path, None)
         return document_symbols
 
     def request_full_symbol_tree(self, within_relative_path: str | None = None) -> list[ls_types.UnifiedSymbolInformation]:
@@ -3046,8 +3027,8 @@ class SolidLanguageServer(ABC):
     def _save_raw_document_symbols_cache(self) -> None:
         cache_file = self.cache_dir / self.RAW_DOCUMENT_SYMBOL_CACHE_FILENAME
 
-        if not self._raw_document_symbols_cache_is_modified:
-            log.debug("No changes to raw document symbols cache, skipping save")
+        if not self._raw_document_symbols_cache_loaded or not self._raw_document_symbols_cache_is_modified:
+            log.debug("No loaded changes to raw document symbols cache, skipping save")
             return
 
         log.info("Saving updated raw document symbols cache to %s", cache_file)
@@ -3092,7 +3073,14 @@ class SolidLanguageServer(ABC):
         return base_version
 
     def _load_raw_document_symbols_cache(self) -> None:
+        if self._raw_document_symbols_cache_loaded:
+            return
+        self._raw_document_symbols_cache_loaded = True
         cache_file = self.cache_dir / self.RAW_DOCUMENT_SYMBOL_CACHE_FILENAME
+
+        if self._document_symbols_cache:
+            log.debug("Skipping raw document symbol cache load because processed cache is populated")
+            return
 
         if not cache_file.exists():
             # check for legacy cache to load to migrate

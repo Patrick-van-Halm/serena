@@ -14,19 +14,24 @@ from serena.symbol import LanguageServerSymbol
 from serena.util.text_utils import find_text_coordinates
 from solidlsp import SolidLanguageServer
 from solidlsp.ls_utils import FileUtils
-from solidlsp.ls import SymbolBodyFactory
+from solidlsp.ls import DocumentSymbols, SymbolBodyFactory
 from solidlsp.ls_types import SymbolKind
 from test.solidlsp.conftest import PYTHON_BACKEND_LANGUAGES
 
 pytestmark = pytest.mark.python
 
 
-def test_symbol_body_factory_defers_line_split() -> None:
-    class Buffer:
-        contents = "zero\none\ntwo"
+def test_symbol_body_factory_does_not_retain_source_text(tmp_path) -> None:
+    source = tmp_path / "sample.py"
+    source.write_text("zero\none\ntwo", encoding="utf-8")
 
-        def split_lines(self):
-            pytest.fail("SymbolBodyFactory eagerly split the file")
+    class Buffer:
+        abs_path = source
+        encoding = "utf-8"
+
+        @property
+        def contents(self):
+            pytest.fail("SymbolBodyFactory eagerly read/retained source contents")
 
     symbol = {
         "location": {
@@ -38,10 +43,34 @@ def test_symbol_body_factory_defers_line_split() -> None:
     }
     body = SymbolBodyFactory(Buffer()).create_symbol_body(symbol)
     assert body.get_text() == "one"
+    assert not hasattr(body, "_lines")
+
+
+def test_document_symbols_does_not_retain_flattened_view() -> None:
+    child = {"name": "child", "children": []}
+    root = {"name": "root", "children": [child]}
+    symbols = DocumentSymbols([root])
+
+    assert list(symbols.iter_symbols()) == [root, child]
+    assert list(symbols.iter_symbols()) == [root, child]
+    assert not hasattr(symbols, "_all_symbols")
 
 
 class TestLanguageServerSymbols:
     """Test the language server's symbol-related functionality."""
+
+    @pytest.mark.parametrize("language_server", PYTHON_BACKEND_LANGUAGES, indirect=True)
+    def test_document_symbols_share_document_metadata_strings(self, language_server: SolidLanguageServer) -> None:
+        file_path = os.path.join("test_repo", "services.py")
+        symbols = list(language_server.request_document_symbols(file_path).iter_symbols())
+        assert len(symbols) > 1
+
+        first_location = symbols[0]["location"]
+        for symbol in symbols[1:]:
+            location = symbol["location"]
+            assert location["relativePath"] is first_location["relativePath"]
+            assert location["absolutePath"] is first_location["absolutePath"]
+            assert location["uri"] is first_location["uri"]
 
     @pytest.mark.parametrize("language_server", PYTHON_BACKEND_LANGUAGES, indirect=True)
     def test_document_symbol_cache_hit_does_not_reread_source(
