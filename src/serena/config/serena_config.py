@@ -979,6 +979,19 @@ class SerenaConfig(SharedConfig, ModeSelectionDefinitionWithBaseModes):
     timeout for tool calls in seconds; if a tool takes longer than this, it is aborted and an error is returned.
     """
 
+    mcp_bridge_unused_idle_timeout_seconds: float = 120.0
+    """
+    Idle timeout for an MCP bridge which has not executed any Serena tool call yet.
+    This primarily cleans up duplicate/probe bridge processes created by MCP clients.
+    Set to 0 to disable this timeout.
+    """
+    mcp_bridge_idle_timeout_seconds: float = 900.0
+    """
+    Idle timeout for an MCP bridge after it has executed at least one Serena tool call.
+    When it expires, the lightweight bridge unregisters its shared-daemon session and exits;
+    the MCP client can start a new bridge when Serena is needed again. Set to 0 to disable.
+    """
+
     token_count_estimator: str = RegisteredTokenCountEstimator.CHAR_COUNT.name
     """Only relevant if `record_tool_usage` is True; the name of the token count estimator to use for tool usage statistics.
     See the `RegisteredTokenCountEstimator` enum for available options.

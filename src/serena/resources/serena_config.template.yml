@@ -31,6 +31,14 @@ agent_interface: tools
 # remains unrestricted regardless of this setting.
 full_access_mode: false
 
+# Idle lifetime for the lightweight shared-daemon MCP bridge.
+# Some MCP clients start duplicate/probe stdio servers and keep their stdin open even
+# after the server is no longer being used. Bridges that never execute a Serena tool
+# are therefore reaped quickly; bridges that have been used get a longer idle window.
+# Set either value to 0 to disable that timeout.
+mcp_bridge_unused_idle_timeout_seconds: 120
+mcp_bridge_idle_timeout_seconds: 900
+
 # line ending convention to use when writing source files.
 # Possible values: "lf" (Unix), "crlf" (Windows), "native" (platform default).
 # Note that Serena's own files (e.g. memories and configuration files) always use native line endings.

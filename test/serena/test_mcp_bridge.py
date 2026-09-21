@@ -1,3 +1,5 @@
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -18,6 +20,7 @@ def test_proxy_tool_forwards_to_shared_runtime() -> None:
     bridge.session_id = "chat-1"
     bridge.client = MagicMock()
     bridge.client.call_tool.return_value = "remote-result"
+    bridge._init_activity_tracking(unused_idle_timeout_seconds=120, idle_timeout_seconds=900)
 
     tool_class = ToolRegistry().get_tool_class_by_name("search_for_pattern")
     proxy_class = bridge._proxy_tool_class(tool_class)
@@ -70,3 +73,52 @@ def test_bridge_fast_mcp_tool_preserves_search_schema() -> None:
     assert mcp_tool.name == "search_for_pattern"
     assert "substring_pattern" in mcp_tool.parameters["properties"]
     assert "relative_path" in mcp_tool.parameters["properties"]
+
+
+
+def test_unused_bridge_expires_on_short_idle_timeout() -> None:
+    bridge = SerenaMCPBridge.__new__(SerenaMCPBridge)
+    bridge._init_activity_tracking(unused_idle_timeout_seconds=120, idle_timeout_seconds=900)
+    bridge._last_client_activity = 100.0
+
+    assert bridge._is_idle_expired(now=219.9) is False
+    assert bridge._is_idle_expired(now=220.0) is True
+
+
+def test_used_bridge_gets_longer_idle_timeout() -> None:
+    bridge = SerenaMCPBridge.__new__(SerenaMCPBridge)
+    bridge._init_activity_tracking(unused_idle_timeout_seconds=120, idle_timeout_seconds=900)
+    bridge._last_client_activity = 100.0
+    bridge._has_seen_tool_call = True
+
+    assert bridge._is_idle_expired(now=999.9) is False
+    assert bridge._is_idle_expired(now=1000.0) is True
+
+
+def test_active_tool_call_never_expires_bridge() -> None:
+    bridge = SerenaMCPBridge.__new__(SerenaMCPBridge)
+    bridge._init_activity_tracking(unused_idle_timeout_seconds=1, idle_timeout_seconds=1)
+    bridge._last_client_activity = 0.0
+    bridge._active_tool_calls = 1
+
+    assert bridge._is_idle_expired(now=10_000.0) is False
+
+
+def test_proxy_tool_marks_bridge_as_used() -> None:
+    bridge = SerenaMCPBridge.__new__(SerenaMCPBridge)
+    bridge.project_root = "/repo"
+    bridge.context = SerenaAgentContext.from_name("codex")
+    bridge.session_id = "chat-activity"
+    bridge.client = MagicMock()
+    bridge.client.call_tool.return_value = "ok"
+    bridge._init_activity_tracking(unused_idle_timeout_seconds=120, idle_timeout_seconds=900)
+
+    original = ToolRegistry().get_tool_class_by_name("search_for_pattern")
+    proxy = bridge._proxy_tool_class(original)(SimpleNamespace(get_context=lambda: bridge.context))
+    before = bridge._last_client_activity
+    time.sleep(0.001)
+    assert proxy.apply_ex(substring_pattern="needle", relative_path="src") == "ok"
+
+    assert bridge._has_seen_tool_call is True
+    assert bridge._active_tool_calls == 0
+    assert bridge._last_client_activity > before
