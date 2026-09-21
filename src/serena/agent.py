@@ -19,8 +19,6 @@ from enum import Enum
 from logging import Logger
 from typing import TYPE_CHECKING, Optional, TypeVar, cast
 
-import requests
-import webview
 from sensai.util import logging
 from sensai.util.helper import mark_used
 from sensai.util.logging import LogTime
@@ -43,7 +41,6 @@ from serena.config.serena_config import (
     SerenaPaths,
     ToolInclusionDefinition,
 )
-from serena.dashboard import SerenaDashboardAPI, SerenaDashboardTrayManager, SerenaDashboardViewer, open_url_in_browser
 from serena.jetbrains import launch_coordinator as jetbrains_launch_coordinator
 from serena.ls_manager import LanguageServerManager
 from serena.memories.memory_manager import MemoryManager
@@ -411,8 +408,12 @@ class DashboardManager:
             :return: whether the mode is supported on the current platform
             """
             if self == DashboardManager.Mode.WEBVIEW:
+                from serena.dashboard import SerenaDashboardViewer
+
                 return SerenaDashboardViewer.is_current_platform_supported()
             elif self == DashboardManager.Mode.TRAY_MANAGER:
+                from serena.dashboard import SerenaDashboardTrayManager
+
                 return SerenaDashboardTrayManager.is_current_platform_supported()
             else:
                 return True
@@ -469,6 +470,8 @@ class DashboardManager:
                         self.open_dashboard_in_browser()
 
     def open_dashboard_in_browser(self) -> None:
+        from serena.dashboard import open_url_in_browser
+
         open_url_in_browser(self.url, use_subprocess=True)
 
     @staticmethod
@@ -476,11 +479,15 @@ class DashboardManager:
         """
         Main function of the subprocess for starting the dashboard viewer
         """
+        from serena.dashboard import SerenaDashboardViewer, open_url_in_browser
+
         try:
             SerenaDashboardViewer(url, start_minimized=minimized, parent_process_id=parent_process_id).run()
-        except webview.errors.WebViewException as e:
+        except Exception as e:
+            # Importing pywebview is intentionally deferred to the dashboard module. Catch
+            # the viewer's platform/runtime failure here without importing webview into
+            # every headless Serena agent merely to name its exception class.
             log.warning(f"Could not open Serena Dashboard viewer. Cause:\n{e}")
-            # Fall back to opening the browser window if the window was supposed to be shown directly
             if not minimized:
                 open_url_in_browser(url, use_subprocess=True)
 
@@ -507,6 +514,8 @@ class DashboardManager:
 
         :param open_on_launch: whether the dashboard should be opened immediately
         """
+        from serena.dashboard import SerenaDashboardTrayManager
+
         with LogTime("Dashboard tray manager initialisation"):
             with self._tray_manager_lock:
                 # ensure the singleton tray manager process is running
@@ -534,6 +543,8 @@ class DashboardManager:
             self._dashboard_viewer_process = None
 
         if self._mode == self.Mode.TRAY_MANAGER:
+            from serena.dashboard import SerenaDashboardTrayManager
+
             with self._tray_manager_lock:
                 SerenaDashboardTrayManager.unregister_instance(port=self._port)
 
@@ -544,6 +555,8 @@ class DashboardManager:
         :param active_project: the currently active project or None if no project is active
         """
         if self._mode == self.Mode.TRAY_MANAGER:
+            from serena.dashboard import SerenaDashboardTrayManager
+
             with self._tray_manager_lock:
                 project_name = active_project.project_name if active_project is not None else None
                 SerenaDashboardTrayManager.update_project(port=self._port, project=project_name)
@@ -716,9 +729,12 @@ class SerenaAgent:
         self._active_tools: AvailableTools
         self._update_active_tools()
 
-        # create the dashboard backend (if enabled), which will register callback.
-        dashboard_api: SerenaDashboardAPI | None = None
+        # Create dashboard dependencies only when enabled. Headless/shared-daemon
+        # project runtimes therefore never import Flask/Pillow/pywebview.
+        dashboard_api = None
         if self.serena_config.web_dashboard:
+            from serena.dashboard import SerenaDashboardAPI
+
             dashboard_api = SerenaDashboardAPI(
                 get_memory_log_handler(),
                 tool_names,
@@ -764,6 +780,8 @@ class SerenaAgent:
             "context": self._context.name,
         }
         try:
+            import requests
+
             requests.get("https://oraios-software.de/serena_usage.php", params=params, timeout=1)
         except Exception as e:
             log.debug(f"Failed to send usage info: {e}")

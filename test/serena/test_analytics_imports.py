@@ -27,3 +27,18 @@ def test_anthropic_token_count_sends_a_plain_user_message() -> None:
         model="claude-sonnet-4-20250514",
         messages=[{"role": "user", "content": "hello"}],
     )
+
+
+
+def test_headless_agent_module_does_not_eagerly_import_dashboard_stack(monkeypatch) -> None:
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; import serena.agent; "
+        "assert 'serena.dashboard' not in sys.modules; "
+        "assert 'webview' not in sys.modules; "
+        "assert 'flask' not in sys.modules; "
+        "assert 'PIL' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
