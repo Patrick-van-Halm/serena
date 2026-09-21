@@ -1,6 +1,6 @@
 import pytest
 
-from serena.config.client_setup import ClientSetupHandlerGrok, client_setup_handlers
+from serena.config.client_setup import ClientSetupHandlerCodex, ClientSetupHandlerGrok, client_setup_handlers
 from serena.config.context_mode import SerenaAgentContext
 from serena.util.shell import ShellCommandResult
 
@@ -129,3 +129,16 @@ def test_client_setup_handlers_use_resolvable_contexts():
         assert len(context_options) == 1
         context_name = context_options[0].removeprefix("--context=")
         assert SerenaAgentContext.from_name(context_name).name == context_name
+
+
+def test_codex_setup_uses_shared_mcp_bridge(monkeypatch):
+    commands: list[str] = []
+
+    def fake_run_shell_command(self: ClientSetupHandlerCodex, command: str) -> bool:
+        commands.append(command)
+        return True
+
+    monkeypatch.setattr(ClientSetupHandlerCodex, "_run_shell_command", fake_run_shell_command)
+
+    assert ClientSetupHandlerCodex().apply() is True
+    assert commands == ["codex mcp add serena -- serena start-mcp-bridge --context=codex --project-from-cwd"]

@@ -86,6 +86,12 @@ class ClientSetupHandlerCodex(ClientSetupHandler):
     def get_mcp_server_options(self) -> list[str]:
         return ["--context=codex", "--project-from-cwd"]
 
+    def get_mcp_server_command(self) -> str:
+        # Codex still launches one stdio process per conversation, but this command is
+        # only a lightweight bridge. The expensive Serena agents/LSPs live in one
+        # autostarted shared daemon and are pooled by project.
+        return f"serena start-mcp-bridge {' '.join(self.get_mcp_server_options())}"
+
     def apply(self) -> bool:
         return self._run_shell_command(f"codex mcp add serena -- {self.get_mcp_server_command()}")
 

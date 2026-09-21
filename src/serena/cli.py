@@ -413,6 +413,53 @@ class TopLevelCommands(AutoRegisteringGroup):
 
     @staticmethod
     @click.command(
+        "start-mcp-bridge",
+        help="Start a lightweight stdio MCP bridge backed by Serena's shared project daemon.",
+        context_settings={"max_content_width": _MAX_CONTENT_WIDTH},
+    )
+    @click.option("--project", type=PROJECT_TYPE, default=None, help="Project path or registered project name.")
+    @click.option(
+        "--context",
+        type=str,
+        default="codex",
+        show_default=True,
+        help="Built-in context name or path to custom context YAML.",
+    )
+    @click.option(
+        "--project-from-cwd",
+        is_flag=True,
+        default=False,
+        help="Auto-detect the project from the bridge process working directory.",
+    )
+    def start_mcp_bridge(project: str | None, context: str, project_from_cwd: bool) -> None:
+        from serena.mcp_bridge import SerenaMCPBridge
+
+        if project_from_cwd:
+            if project is not None:
+                raise click.UsageError("--project-from-cwd cannot be used together with --project")
+            project = find_project_root()
+            if project is None:
+                raise click.ClickException(
+                    f"No project root found from cwd={os.getcwd()} (no .serena/project.yml or .git found)."
+                )
+
+        if project is None:
+            raise click.UsageError("Pass --project or --project-from-cwd")
+
+        if not os.path.isdir(project):
+            config = SerenaConfig.from_config_file()
+            registered = config.get_registered_project(project)
+            if registered is None:
+                raise click.ClickException(f"Unknown Serena project: {project}")
+            project = str(registered.project_root)
+
+        # stdout is reserved for MCP stdio framing; keep bridge logging on stderr only.
+        if not logging.is_enabled():
+            logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format=SERENA_LOG_FORMAT)
+        SerenaMCPBridge(project_root=project, context_name=context).run()
+
+    @staticmethod
+    @click.command(
         "print-system-prompt", help="Print the system prompt for a project.", context_settings={"max_content_width": _MAX_CONTENT_WIDTH}
     )
     @click.argument("project", type=click.Path(exists=True), default=None, required=False)
