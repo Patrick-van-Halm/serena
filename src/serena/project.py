@@ -3,8 +3,10 @@
 import logging
 import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Optional
 
 import pathspec
@@ -60,6 +62,12 @@ class Project(ToStringMixin):
 
         self.language_server_manager: LanguageServerManager | None = None
         self._language_server_manager_init_error: Exception | None = None
+        self._language_server_manager_lock = threading.RLock()
+        self._language_server_activity_lock = threading.Lock()
+        self._language_server_active_operations = 0
+        self._language_server_last_activity = monotonic()
+        self._language_server_idle_stop_event = threading.Event()
+        self._language_server_idle_thread: threading.Thread | None = None
         self.is_newly_created = is_newly_created
         self._agent: Optional["SerenaAgent"] = None
 
@@ -533,7 +541,100 @@ class Project(ToStringMixin):
             text_lines.append(TextLine(line_number=line_number, line_content=content, match_type=match_type))
         return MatchedConsecutiveLines(lines=text_lines, source_file_path=relative_file_path)
 
+    def _touch_language_server_activity(self) -> None:
+        with self._language_server_activity_lock:
+            self._language_server_last_activity = monotonic()
+
+    def _ensure_language_server_idle_thread(self) -> None:
+        if self.serena_config.language_server_idle_timeout_seconds <= 0:
+            return
+        if self._language_server_idle_thread is not None and self._language_server_idle_thread.is_alive():
+            return
+
+        self._language_server_idle_stop_event.clear()
+        self._language_server_idle_thread = threading.Thread(
+            target=self._language_server_idle_loop,
+            name=f"SerenaLSPIdle[{self.project_name}]",
+            daemon=True,
+        )
+        self._language_server_idle_thread.start()
+
+    def _language_server_idle_loop(self) -> None:
+        while not self._language_server_idle_stop_event.is_set():
+            timeout = float(self.serena_config.language_server_idle_timeout_seconds)
+            if timeout <= 0:
+                return
+            check_interval = min(max(timeout / 4.0, 0.05), 30.0)
+            if self._language_server_idle_stop_event.wait(check_interval):
+                return
+            self._maybe_stop_idle_language_server()
+
+    def _maybe_stop_idle_language_server(self, now: float | None = None) -> bool:
+        """Stop the LSP manager if it has been symbolically idle long enough."""
+        timeout = float(self.serena_config.language_server_idle_timeout_seconds)
+        if timeout <= 0 or self.language_server_manager is None:
+            return False
+        check_now = monotonic() if now is None else now
+
+        with self._language_server_activity_lock:
+            if self._language_server_active_operations > 0:
+                return False
+            if check_now - self._language_server_last_activity < timeout:
+                return False
+
+        with self._language_server_manager_lock:
+            manager = self.language_server_manager
+            if manager is None:
+                return False
+            with self._language_server_activity_lock:
+                if self._language_server_active_operations > 0:
+                    return False
+                if check_now - self._language_server_last_activity < timeout:
+                    return False
+
+            log.info(
+                "Stopping language server manager for project %s after %.1fs of symbolic inactivity",
+                self.project_name,
+                timeout,
+            )
+            manager.stop_all(save_cache=True)
+            if self.language_server_manager is manager:
+                self.language_server_manager = None
+            return True
+
+    def ensure_language_server_manager(self) -> LanguageServerManager:
+        """Return the project's LSP manager, starting it lazily if necessary."""
+        with self._language_server_manager_lock:
+            if self.language_server_manager is None:
+                manager = self._create_language_server_manager_unlocked()
+            else:
+                manager = self.language_server_manager
+            self._touch_language_server_activity()
+            self._ensure_language_server_idle_thread()
+            return manager
+
+    @contextmanager
+    def language_server_activity(self) -> Iterator[LanguageServerManager]:
+        """Hold an activity lease for a complete LSP-backed operation."""
+        with self._language_server_activity_lock:
+            self._language_server_active_operations += 1
+            self._language_server_last_activity = monotonic()
+        try:
+            yield self.ensure_language_server_manager()
+        finally:
+            with self._language_server_activity_lock:
+                self._language_server_active_operations = max(self._language_server_active_operations - 1, 0)
+                self._language_server_last_activity = monotonic()
+
     def create_language_server_manager(self) -> LanguageServerManager:
+        """Force (re)creation of the project's language-server manager."""
+        with self._language_server_manager_lock:
+            manager = self._create_language_server_manager_unlocked()
+            self._touch_language_server_activity()
+            self._ensure_language_server_idle_thread()
+            return manager
+
+    def _create_language_server_manager_unlocked(self) -> LanguageServerManager:
         """
         Creates the language server manager for the project, starting one language server per configured programming language.
 
@@ -594,23 +695,23 @@ class Project(ToStringMixin):
         if self.language_server_manager is None:
             if self._language_server_manager_init_error is not None:
                 return f"error ({self._language_server_manager_init_error})"
-            else:
-                return "not initialized"
-        else:
-            return "ready"
+            if self.serena_config.language_server_lazy_start:
+                return "idle (lazy; not started)"
+            return "not initialized"
+        return "ready"
 
     def get_language_server_manager_or_raise(self) -> LanguageServerManager:
-        if self.language_server_manager is None:
-            msg = TextBuilder("The language server manager is not initialized, indicating a problem during project initialisation.")
-            if self._language_server_manager_init_error is not None:
-                msg.with_text(str(self._language_server_manager_init_error))
+        try:
+            return self.ensure_language_server_manager()
+        except Exception as e:
+            msg = TextBuilder("The language server manager could not be started.")
+            msg.with_text(str(e))
             if self._agent is not None:
                 msg.with_text("For details, please check the logs. " + self._agent.get_log_inspection_instructions())
             msg.with_text(
                 "IMPORTANT: Stop, do not attempt workarounds. Inform the user and wait for further instructions before you continue!"
             )
-            raise Exception(msg.build())
-        return self.language_server_manager
+            raise Exception(msg.build()) from e
 
     def add_language_server(self, ls_id: LanguageServerIdLike) -> None:
         """
@@ -671,6 +772,8 @@ class Project(ToStringMixin):
         return 0
 
     def shutdown(self, timeout: float = 2.0) -> None:
-        if self.language_server_manager is not None:
-            self.language_server_manager.stop_all(save_cache=True, timeout=timeout)
-            self.language_server_manager = None
+        self._language_server_idle_stop_event.set()
+        with self._language_server_manager_lock:
+            if self.language_server_manager is not None:
+                self.language_server_manager.stop_all(save_cache=True, timeout=timeout)
+                self.language_server_manager = None

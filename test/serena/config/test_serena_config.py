@@ -34,6 +34,12 @@ def test_mcp_bridge_idle_timeout_defaults() -> None:
     assert config.mcp_bridge_idle_timeout_seconds == 900.0
 
 
+def test_language_server_lifecycle_defaults() -> None:
+    config = SerenaConfig()
+    assert config.language_server_lazy_start is True
+    assert config.language_server_idle_timeout_seconds == 600.0
+
+
 class TestProjectConfigAutogenerate:
     """Test class for ProjectConfig autogeneration functionality."""
 

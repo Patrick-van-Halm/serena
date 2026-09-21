@@ -992,6 +992,19 @@ class SerenaConfig(SharedConfig, ModeSelectionDefinitionWithBaseModes):
     the MCP client can start a new bridge when Serena is needed again. Set to 0 to disable.
     """
 
+    language_server_lazy_start: bool = True
+    """
+    When true, LSP language servers are started on the first symbolic operation rather
+    than when a project is activated. Non-symbolic file/search/shell work therefore does
+    not pay the language-server memory/startup cost.
+    """
+    language_server_idle_timeout_seconds: float = 600.0
+    """
+    Stop a project's LSP processes after this many seconds without symbolic activity.
+    The project runtime remains loaded and the next symbolic operation starts the LSP
+    again. Set to 0 to keep an already-started LSP alive indefinitely.
+    """
+
     token_count_estimator: str = RegisteredTokenCountEstimator.CHAR_COUNT.name
     """Only relevant if `record_tool_usage` is True; the name of the token count estimator to use for tool usage statistics.
     See the `RegisteredTokenCountEstimator` enum for available options.

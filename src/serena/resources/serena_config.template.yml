@@ -39,6 +39,15 @@ full_access_mode: false
 mcp_bridge_unused_idle_timeout_seconds: 120
 mcp_bridge_idle_timeout_seconds: 900
 
+# LSP lifecycle management. With lazy start enabled, opening/activating a project does
+# not start its language server; the first symbolic operation does. Once started, the
+# server is stopped after the configured period with no symbolic activity, releasing
+# its process memory while keeping the Serena project runtime alive. The next symbolic
+# operation starts it again and reloads persisted caches.
+# Set language_server_idle_timeout_seconds to 0 to disable automatic LSP shutdown.
+language_server_lazy_start: true
+language_server_idle_timeout_seconds: 600
+
 # line ending convention to use when writing source files.
 # Possible values: "lf" (Unix), "crlf" (Windows), "native" (platform default).
 # Note that Serena's own files (e.g. memories and configuration files) always use native line endings.

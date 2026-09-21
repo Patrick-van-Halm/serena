@@ -1556,10 +1556,14 @@ class SerenaAgent:
         project = self._active_project
         assert project is not None
 
-        # for LSP mode, start the language server manager
+        # For LSP mode, optionally defer the expensive server process until the first
+        # symbolic operation. Activation commands still run eagerly above.
         if self.get_language_backend().is_lsp():
-            with LogTime("Language server initialization", logger=log):
-                self.reset_language_server_manager()
+            if self.serena_config.language_server_lazy_start:
+                log.info("Deferring language server startup for project %s until first symbolic use", project.project_name)
+            else:
+                with LogTime("Language server initialization", logger=log):
+                    self.reset_language_server_manager()
 
         # for JetBrains mode, search for plugin server and spawn IDE (if not found and launch command provided)
         elif self.get_language_backend().is_jetbrains():
