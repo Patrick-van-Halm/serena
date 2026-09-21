@@ -54,10 +54,14 @@ class MCPRuntimeInfoResponse(BaseModel):
     structured_tool_output: bool | None = None
 
 
-class MCPBridgeCloseRequest(BaseModel):
+class MCPBridgeSessionRequest(BaseModel):
     project_root: str
     context: str = "codex"
     session_id: str
+
+
+class MCPBridgeCloseRequest(MCPBridgeSessionRequest):
+    pass
 
 
 class MCPToolCallRequest(BaseModel):
@@ -79,7 +83,7 @@ class MCPProjectRuntime:
     context: str
     last_access: float
     active_calls: int = 0
-    bridge_sessions: set[str] = field(default_factory=set)
+    bridge_sessions: dict[str, float] = field(default_factory=dict)
 
 
 class CallFacadeMethodRequest(BaseModel):
@@ -110,6 +114,7 @@ class ProjectServer:
     MCP_RUNTIME_IDLE_SECONDS = 30 * 60
     MCP_RUNTIME_MAX_PROJECTS = 4
     MCP_RUNTIME_EVICTION_INTERVAL_SECONDS = 60
+    MCP_BRIDGE_LEASE_SECONDS = 3 * 60
 
     PORT = SerenaPorts.PROJECT_SERVER_PORT
 
@@ -186,6 +191,12 @@ class ProjectServer:
                 log.warning("Shared MCP runtime setup failed: %s", e)
                 return Response(f"{type(e).__name__}: {e}", status=400, mimetype="text/plain")
             return Response(info.model_dump_json(), mimetype="application/json")
+
+        @self._app.route("/mcp/bridge-heartbeat", methods=["POST"])
+        def mcp_bridge_heartbeat() -> Response:
+            req = MCPBridgeSessionRequest.model_validate(request.get_json())
+            self._touch_mcp_bridge(req)
+            return Response("ok", mimetype="text/plain")
 
         @self._app.route("/mcp/bridge-close", methods=["POST"])
         def mcp_bridge_close() -> Response:
@@ -279,7 +290,7 @@ class ProjectServer:
         ]
         if req.session_id:
             with self._mcp_runtimes_lock:
-                runtime.bridge_sessions.add(req.session_id)
+                runtime.bridge_sessions[req.session_id] = time.monotonic()
                 runtime.last_access = time.monotonic()
 
         context = runtime.agent.get_context()
@@ -290,12 +301,21 @@ class ProjectServer:
             structured_tool_output=context.structured_tool_output,
         )
 
+    def _touch_mcp_bridge(self, req: MCPBridgeSessionRequest) -> None:
+        key = self._mcp_runtime_key(req.project_root, req.context)
+        with self._mcp_runtimes_lock:
+            runtime = self._mcp_runtimes.get(key)
+            if runtime is not None:
+                now = time.monotonic()
+                runtime.bridge_sessions[req.session_id] = now
+                runtime.last_access = now
+
     def _close_mcp_bridge(self, req: MCPBridgeCloseRequest) -> None:
         key = self._mcp_runtime_key(req.project_root, req.context)
         with self._mcp_runtimes_lock:
             runtime = self._mcp_runtimes.get(key)
             if runtime is not None:
-                runtime.bridge_sessions.discard(req.session_id)
+                runtime.bridge_sessions.pop(req.session_id, None)
                 runtime.last_access = time.monotonic()
 
     def _call_mcp_tool(self, req: MCPToolCallRequest) -> str:
@@ -309,7 +329,9 @@ class ProjectServer:
 
         with self._mcp_runtimes_lock:
             runtime.active_calls += 1
-            runtime.last_access = time.monotonic()
+            now = time.monotonic()
+            runtime.bridge_sessions[req.session_id] = now
+            runtime.last_access = now
         try:
             tool = runtime.agent.get_tool_by_name(req.tool_name)
             return tool.apply_ex(
@@ -326,6 +348,17 @@ class ProjectServer:
         now = time.monotonic()
         evicted: list[MCPProjectRuntime] = []
         with self._mcp_runtimes_lock:
+            # Bridge processes renew short leases in the background. Drop stale leases so
+            # a crashed/killed Codex bridge cannot pin a project runtime forever.
+            for runtime in self._mcp_runtimes.values():
+                stale_sessions = [
+                    session_id
+                    for session_id, last_seen in runtime.bridge_sessions.items()
+                    if now - last_seen >= self.MCP_BRIDGE_LEASE_SECONDS
+                ]
+                for session_id in stale_sessions:
+                    runtime.bridge_sessions.pop(session_id, None)
+
             inactive = [
                 (key, runtime)
                 for key, runtime in self._mcp_runtimes.items()
@@ -347,6 +380,8 @@ class ProjectServer:
                         (key, runtime)
                         for key, runtime in self._mcp_runtimes.items()
                         if runtime.active_calls == 0
+                        and not runtime.bridge_sessions
+                        and not runtime.agent.get_current_tasks()
                     ),
                     key=lambda item: item[1].last_access,
                 )
@@ -483,6 +518,16 @@ class ProjectServerClient:
         if not response.ok:
             raise ValueError(f"Shared MCP daemon error ({response.status_code}): {response.text[:2000]}")
         return MCPRuntimeInfoResponse.model_validate_json(response.text)
+
+    def heartbeat_mcp_bridge(self, project_root: str, context: str, session_id: str) -> None:
+        payload = MCPBridgeSessionRequest(project_root=project_root, context=context, session_id=session_id).model_dump()
+        response = requests_lib.post(
+            f"{self._base_url}/mcp/bridge-heartbeat",
+            json=payload,
+            headers=self._headers,
+            timeout=5,
+        )
+        response.raise_for_status()
 
     def close_mcp_bridge(self, project_root: str, context: str, session_id: str) -> None:
         payload = MCPBridgeCloseRequest(project_root=project_root, context=context, session_id=session_id).model_dump()

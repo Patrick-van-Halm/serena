@@ -1,4 +1,5 @@
 import threading
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -14,6 +15,7 @@ from werkzeug.serving import make_server
 from serena.config.serena_config import SerenaConfig
 from serena.project_server import (
     MCPBridgeCloseRequest,
+    MCPBridgeSessionRequest,
     MCPProjectRuntime,
     MCPRuntimeInfoRequest,
     MCPToolCallRequest,
@@ -45,7 +47,10 @@ def authenticated_server(project_server: ProjectServer, monkeypatch: pytest.Monk
 
 
 @pytest.mark.parametrize("authorization", [None, "Bearer wrong-secret", "test-shared-secret", "Bearer café"])
-@pytest.mark.parametrize("path", ["/heartbeat", "/query_project"])
+@pytest.mark.parametrize(
+    "path",
+    ["/heartbeat", "/query_project", "/mcp/runtime-info", "/mcp/tool-call", "/mcp/bridge-heartbeat", "/mcp/bridge-close"],
+)
 def test_project_server_rejects_invalid_credentials(authenticated_server: ProjectServer, authorization: str | None, path: str) -> None:
     # unauthorized requests are rejected even before query payload validation
     headers = {} if authorization is None else {"Authorization": authorization}
@@ -330,7 +335,7 @@ def test_shared_mcp_open_bridge_blocks_idle_eviction(project_server: ProjectServ
         project_root="/project",
         context="codex",
         last_access=0.0,
-        bridge_sessions={"chat-1"},
+        bridge_sessions={"chat-1": time.monotonic()},
     )
     server._mcp_runtimes = {("/project", "codex"): runtime}
     server._mcp_runtime_load_locks = {}
@@ -364,3 +369,41 @@ def test_shared_mcp_background_task_blocks_eviction(project_server: ProjectServe
 
     assert ("/project", "codex") in server._mcp_runtimes
     agent.on_shutdown.assert_not_called()
+
+
+
+def test_shared_mcp_stale_bridge_lease_does_not_pin_runtime(project_server: ProjectServer) -> None:
+    server = cast(Any, project_server)
+    agent = MagicMock()
+    agent.get_current_tasks.return_value = []
+    runtime = MCPProjectRuntime(
+        agent=agent,
+        project_root="/project",
+        context="codex",
+        last_access=0.0,
+        bridge_sessions={"dead-chat": 0.0},
+    )
+    server._mcp_runtimes = {("/project", "codex"): runtime}
+    server._mcp_runtime_load_locks = {}
+    server._mcp_runtimes_lock = threading.Lock()
+    server.MCP_RUNTIME_IDLE_SECONDS = 0
+    server.MCP_RUNTIME_MAX_PROJECTS = 0
+    server.MCP_BRIDGE_LEASE_SECONDS = 0
+
+    server._evict_mcp_runtimes()
+
+    assert ("/project", "codex") not in server._mcp_runtimes
+    agent.on_shutdown.assert_called_once_with()
+
+
+def test_shared_mcp_heartbeat_renews_bridge_lease(project_server: ProjectServer, monkeypatch: pytest.MonkeyPatch) -> None:
+    server = cast(Any, project_server)
+    runtime = MCPProjectRuntime(agent=MagicMock(), project_root="/project", context="codex", last_access=0.0)
+    server._mcp_runtimes = {("/project", "codex"): runtime}
+    server._mcp_runtimes_lock = threading.Lock()
+    monkeypatch.setattr(server, "_mcp_runtime_key", lambda root, context: ("/project", context))
+
+    server._touch_mcp_bridge(MCPBridgeSessionRequest(project_root="/project", context="codex", session_id="chat-1"))
+
+    assert "chat-1" in runtime.bridge_sessions
+    assert runtime.bridge_sessions["chat-1"] > 0

@@ -8,9 +8,10 @@ import shutil
 import subprocess
 import sys
 import time
+import threading
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import docstring_parser
 from filelock import FileLock
@@ -247,6 +248,13 @@ class SerenaMCPBridge:
         config = SerenaConfig.from_config_file()
         self.client = ensure_shared_daemon(config)
         runtime_info = self.client.get_mcp_runtime_info(self.project_root, self.context.name, session_id=self.session_id)
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name="SerenaMCPBridgeHeartbeat",
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
 
         Settings.model_config = SettingsConfigDict(env_prefix="FASTMCP_")
         self.server = FastMCP(
@@ -263,7 +271,7 @@ class SerenaMCPBridge:
         for tool_name in runtime_info.tool_names:
             tool_class = registry.get_tool_class_by_name(tool_name)
             proxy_class = self._proxy_tool_class(tool_class)
-            proxy_tool = proxy_class(bridge_agent)
+            proxy_tool = proxy_class(cast(Any, bridge_agent))
             mcp_tool = BridgeFastMCPTool(
                 proxy_tool,
                 openai_tool_compatible=openai_compatible,
@@ -311,10 +319,24 @@ class SerenaMCPBridge:
             },
         )
 
+    def _heartbeat_loop(self) -> None:
+        while not self._heartbeat_stop.wait(60.0):
+            try:
+                self.client.heartbeat_mcp_bridge(
+                    project_root=self.project_root,
+                    context=self.context.name,
+                    session_id=self.session_id,
+                )
+            except Exception as e:
+                # A transient daemon restart should not kill the stdio bridge. The next
+                # tool call will surface a concrete connection error if it persists.
+                log.debug("Shared MCP bridge heartbeat failed: %s", e)
+
     def run(self) -> None:
         try:
             self.server.run(transport="stdio")
         finally:
+            self._heartbeat_stop.set()
             self.client.close_mcp_bridge(
                 project_root=self.project_root,
                 context=self.context.name,
