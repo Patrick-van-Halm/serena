@@ -6,6 +6,7 @@ The implementation of operations on the project's files.
 import os
 import shutil
 from collections import defaultdict
+from collections.abc import Callable
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
