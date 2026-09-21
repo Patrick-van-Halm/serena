@@ -127,16 +127,19 @@ class TaskExecutor:
             """
             self.future.cancel()
 
-        def wait_until_done(self, timeout: float | None = None) -> bool:
+        def wait_until_finished(self, timeout: float | None) -> bool:
+            """Wait for the underlying execution thread, independently of Future state."""
+            return self._finished_event.wait(timeout=timeout)
+
+        def wait_until_done(self) -> bool:
             """
-            Wait until the underlying execution thread has actually finished.
+            Wait for actual execution completion using this task's configured timeout.
 
             Future cancellation alone is deliberately not considered completion: Python
             cannot safely kill an arbitrary running thread, so allowing the dispatcher to
             continue at that point would accumulate abandoned concurrent work.
             """
-            effective_timeout = self.timeout if timeout is None else timeout
-            return self._finished_event.wait(timeout=effective_timeout)
+            return self.wait_until_finished(self.timeout)
 
     def _process_task_queue(self) -> None:
         while True:
@@ -163,7 +166,7 @@ class TaskExecutor:
                     task.name,
                     task.timeout,
                 )
-                task.wait_until_done(timeout=None)
+                task.wait_until_finished(timeout=None)
             with self._task_executor_lock:
                 self._task_executor_current_task = None
                 if task.logged:

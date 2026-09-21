@@ -242,53 +242,7 @@ class _SymbolBodySource:
     abs_path: Path
     encoding: str
 
-    def read_range(self, start_line: int, start_col: int, end_line: int, end_col: int) -> str:
-        selected: list[str] = []
-        current_line = 0
-        reached_eof = True
-
-        with self.abs_path.open("r", encoding=self.encoding) as f:
-            for raw_line in f:
-                line = raw_line[:-1] if raw_line.endswith("\n") else raw_line
-                if current_line >= start_line:
-                    selected.append(line)
-                if current_line >= end_line:
-                    reached_eof = False
-                    break
-                current_line += 1
-
-        if not selected:
-            raise InvalidTextLocationError(
-                f"Symbol range start (line {start_line}, col {start_col}) is out of bounds for {self.abs_path}"
-            )
-
-        actual_end_line = end_line
-        actual_end_col = end_col
-        if reached_eof and current_line < end_line:
-            # LSP convention: a whole-file range may end at line_count, column 0.
-            if current_line + 1 == end_line and end_col == 0:
-                actual_end_line = current_line
-                actual_end_col = len(selected[-1])
-            else:
-                raise InvalidTextLocationError(
-                    f"Symbol range end (line {end_line}, col {end_col}) is out of bounds for {self.abs_path}"
-                )
-
-        end_idx = actual_end_line - start_line
-        if end_idx >= len(selected):
-            if end_idx == len(selected) and actual_end_col == 0:
-                end_idx -= 1
-                actual_end_col = len(selected[end_idx])
-            else:
-                raise InvalidTextLocationError(
-                    f"Symbol range end (line {end_line}, col {end_col}) is out of bounds for {self.abs_path}"
-                )
-
-        selected = selected[: end_idx + 1]
-        selected[0] = selected[0][start_col:]
-        selected[-1] = selected[-1][:actual_end_col]
-        return "\n".join(selected)
-
+    def read_range(self, start_line: int, start_col: int, end_line: int, end_col: int) -> str:\n        """\n        Read only the logical LSP lines intersecting the range.\n\n        Text mode universal-newline handling normalises CRLF and bare CR to LF, matching\n        FileUtils.read_file/TextUtils. A trailing newline creates one final empty logical\n        line, matching the previous split-on-LF representation.\n        """\n        if start_line < 0 or end_line < start_line or start_col < 0 or end_col < 0:\n            raise InvalidTextLocationError(f"Invalid symbol range for {self.abs_path}")\n\n        selected: list[str] = []\n        line_no = 0\n        saw_physical_line = False\n        last_had_newline = False\n        found_requested_end = False\n\n        with self.abs_path.open("r", encoding=self.encoding, newline=None) as f:\n            for raw_line in f:\n                saw_physical_line = True\n                last_had_newline = raw_line.endswith("\\n")\n                line = raw_line[:-1] if last_had_newline else raw_line\n\n                if start_line <= line_no <= end_line:\n                    selected.append(line)\n\n                if line_no == end_line:\n                    found_requested_end = True\n                    break\n                line_no += 1\n\n        if not found_requested_end:\n            if not saw_physical_line:\n                logical_last_line = 0\n                logical_last_text = ""\n                if start_line == 0 and end_line >= 0:\n                    selected.append("")\n            elif last_had_newline:\n                logical_last_line = line_no\n                logical_last_text = ""\n                if start_line <= logical_last_line <= end_line:\n                    selected.append("")\n            else:\n                logical_last_line = line_no - 1 if line_no > 0 else 0\n                logical_last_text = selected[-1] if selected and logical_last_line >= start_line else ""\n\n            logical_line_count = logical_last_line + 1\n            if end_line == logical_line_count and end_col == 0:\n                end_line = logical_last_line\n                end_col = len(logical_last_text)\n            elif end_line >= logical_line_count:\n                raise InvalidTextLocationError(\n                    f"Symbol range end (line {end_line}, col {end_col}) is out of bounds for {self.abs_path}"\n                )\n\n        if start_line > end_line or not selected:\n            raise InvalidTextLocationError(\n                f"Symbol range start (line {start_line}, col {start_col}) is out of bounds for {self.abs_path}"\n            )\n\n        end_idx = end_line - start_line\n        if end_idx >= len(selected):\n            raise InvalidTextLocationError(\n                f"Symbol range end (line {end_line}, col {end_col}) is out of bounds for {self.abs_path}"\n            )\n\n        selected = selected[: end_idx + 1]\n        if len(selected) == 1:\n            return selected[0][start_col:end_col]\n\n        selected[0] = selected[0][start_col:]\n        selected[-1] = selected[-1][:end_col]\n        return "\\n".join(selected)\n
 
 class SymbolBody(ToStringMixin):
     """

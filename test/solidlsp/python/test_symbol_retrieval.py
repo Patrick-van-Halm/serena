@@ -46,6 +46,45 @@ def test_symbol_body_factory_does_not_retain_source_text(tmp_path) -> None:
     assert not hasattr(body, "_lines")
 
 
+def test_symbol_body_same_line_nonzero_columns(tmp_path) -> None:
+    source = tmp_path / "sample.py"
+    source.write_text("0123456789\n", encoding="utf-8")
+
+    class Buffer:
+        abs_path = source
+        encoding = "utf-8"
+
+    symbol = {
+        "location": {
+            "range": {
+                "start": {"line": 0, "character": 3},
+                "end": {"line": 0, "character": 7},
+            }
+        }
+    }
+    assert SymbolBodyFactory(Buffer()).create_symbol_body(symbol).get_text() == "3456"
+
+
+@pytest.mark.parametrize("content", ["alpha\n", "alpha\r\n", "alpha\r"])
+def test_symbol_body_preserves_trailing_logical_line_range(tmp_path, content: str) -> None:
+    source = tmp_path / "sample.py"
+    source.write_text(content, encoding="utf-8", newline="")
+
+    class Buffer:
+        abs_path = source
+        encoding = "utf-8"
+
+    symbol = {
+        "location": {
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 1, "character": 0},
+            }
+        }
+    }
+    assert SymbolBodyFactory(Buffer()).create_symbol_body(symbol).get_text() == "alpha\n"
+
+
 def test_document_symbols_does_not_retain_flattened_view() -> None:
     child = {"name": "child", "children": []}
     root = {"name": "root", "children": [child]}

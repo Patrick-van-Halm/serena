@@ -116,3 +116,25 @@ def test_task_executor_cancellation_via_task_info(executor):
 
     time.sleep(0.25)
     assert second.did_run
+
+
+
+def test_timed_out_task_does_not_overlap_following_task() -> None:
+    executor = TaskExecutor("TimeoutSerialExecutor")
+    state = {"first_started": False, "first_finished": False, "overlap": False}
+
+    def first() -> None:
+        state["first_started"] = True
+        time.sleep(0.15)
+        state["first_finished"] = True
+
+    def second() -> None:
+        state["overlap"] = state["first_started"] and not state["first_finished"]
+
+    first_task = executor.issue_task(first, timeout=0.03)
+    second_task = executor.issue_task(second, timeout=1)
+
+    with pytest.raises(Exception):
+        first_task.result(timeout=0.05)
+    assert second_task.result(timeout=1) is None
+    assert state["overlap"] is False
