@@ -246,7 +246,7 @@ class SerenaMCPBridge:
 
         config = SerenaConfig.from_config_file()
         self.client = ensure_shared_daemon(config)
-        runtime_info = self.client.get_mcp_runtime_info(self.project_root, self.context.name)
+        runtime_info = self.client.get_mcp_runtime_info(self.project_root, self.context.name, session_id=self.session_id)
 
         Settings.model_config = SettingsConfigDict(env_prefix="FASTMCP_")
         self.server = FastMCP(
@@ -312,4 +312,11 @@ class SerenaMCPBridge:
         )
 
     def run(self) -> None:
-        self.server.run(transport="stdio")
+        try:
+            self.server.run(transport="stdio")
+        finally:
+            self.client.close_mcp_bridge(
+                project_root=self.project_root,
+                context=self.context.name,
+                session_id=self.session_id,
+            )

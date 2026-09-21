@@ -13,6 +13,7 @@ from werkzeug.serving import make_server
 
 from serena.config.serena_config import SerenaConfig
 from serena.project_server import (
+    MCPBridgeCloseRequest,
     MCPProjectRuntime,
     MCPRuntimeInfoRequest,
     MCPToolCallRequest,
@@ -317,3 +318,49 @@ def test_shared_mcp_tool_call_forwards_bridge_session_id(project_server: Project
         code="1 + 1",
     )
     assert runtime.active_calls == 0
+
+
+
+def test_shared_mcp_open_bridge_blocks_idle_eviction(project_server: ProjectServer, monkeypatch: pytest.MonkeyPatch) -> None:
+    server = cast(Any, project_server)
+    agent = MagicMock()
+    agent.get_current_tasks.return_value = []
+    runtime = MCPProjectRuntime(
+        agent=agent,
+        project_root="/project",
+        context="codex",
+        last_access=0.0,
+        bridge_sessions={"chat-1"},
+    )
+    server._mcp_runtimes = {("/project", "codex"): runtime}
+    server._mcp_runtime_load_locks = {}
+    server._mcp_runtimes_lock = threading.Lock()
+    server.MCP_RUNTIME_IDLE_SECONDS = 0
+    server.MCP_RUNTIME_MAX_PROJECTS = 0
+
+    server._evict_mcp_runtimes()
+    assert ("/project", "codex") in server._mcp_runtimes
+
+    monkeypatch.setattr(server, "_mcp_runtime_key", lambda root, context: ("/project", context))
+    server._close_mcp_bridge(MCPBridgeCloseRequest(project_root="/project", context="codex", session_id="chat-1"))
+    server._evict_mcp_runtimes()
+
+    assert ("/project", "codex") not in server._mcp_runtimes
+    agent.on_shutdown.assert_called_once_with()
+
+
+def test_shared_mcp_background_task_blocks_eviction(project_server: ProjectServer) -> None:
+    server = cast(Any, project_server)
+    agent = MagicMock()
+    agent.get_current_tasks.return_value = [MagicMock()]
+    runtime = MCPProjectRuntime(agent=agent, project_root="/project", context="codex", last_access=0.0)
+    server._mcp_runtimes = {("/project", "codex"): runtime}
+    server._mcp_runtime_load_locks = {}
+    server._mcp_runtimes_lock = threading.Lock()
+    server.MCP_RUNTIME_IDLE_SECONDS = 0
+    server.MCP_RUNTIME_MAX_PROJECTS = 0
+
+    server._evict_mcp_runtimes()
+
+    assert ("/project", "codex") in server._mcp_runtimes
+    agent.on_shutdown.assert_not_called()

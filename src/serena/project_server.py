@@ -6,7 +6,7 @@ import pickle
 import secrets
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -44,6 +44,7 @@ class MCPRuntimeInfoRequest(BaseModel):
 
     project_root: str
     context: str = "codex"
+    session_id: str | None = None
 
 
 class MCPRuntimeInfoResponse(BaseModel):
@@ -51,6 +52,12 @@ class MCPRuntimeInfoResponse(BaseModel):
     tool_names: list[str]
     instructions: str
     structured_tool_output: bool | None = None
+
+
+class MCPBridgeCloseRequest(BaseModel):
+    project_root: str
+    context: str = "codex"
+    session_id: str
 
 
 class MCPToolCallRequest(BaseModel):
@@ -72,6 +79,7 @@ class MCPProjectRuntime:
     context: str
     last_access: float
     active_calls: int = 0
+    bridge_sessions: set[str] = field(default_factory=set)
 
 
 class CallFacadeMethodRequest(BaseModel):
@@ -88,10 +96,6 @@ class CallFacadeMethodRequest(BaseModel):
 
 
 class ProjectServer:
-    MCP_RUNTIME_IDLE_SECONDS = 30 * 60
-    MCP_RUNTIME_MAX_PROJECTS = 4
-    MCP_RUNTIME_EVICTION_INTERVAL_SECONDS = 60
-
     """
     A lightweight Flask server that exposes a SerenaAgent's project querying
     capabilities via HTTP, using the LSP language server backend for symbolic retrieval.
@@ -102,6 +106,10 @@ class ProjectServer:
     provides a ``/query_project`` endpoint whose interface matches
     :class:`~serena.tools.query_project_tools.QueryProjectTool`.
     """
+
+    MCP_RUNTIME_IDLE_SECONDS = 30 * 60
+    MCP_RUNTIME_MAX_PROJECTS = 4
+    MCP_RUNTIME_EVICTION_INTERVAL_SECONDS = 60
 
     PORT = SerenaPorts.PROJECT_SERVER_PORT
 
@@ -178,6 +186,12 @@ class ProjectServer:
                 log.warning("Shared MCP runtime setup failed: %s", e)
                 return Response(f"{type(e).__name__}: {e}", status=400, mimetype="text/plain")
             return Response(info.model_dump_json(), mimetype="application/json")
+
+        @self._app.route("/mcp/bridge-close", methods=["POST"])
+        def mcp_bridge_close() -> Response:
+            req = MCPBridgeCloseRequest.model_validate(request.get_json())
+            self._close_mcp_bridge(req)
+            return Response("ok", mimetype="text/plain")
 
         @self._app.route("/mcp/tool-call", methods=["POST"])
         def mcp_tool_call() -> Response:
@@ -263,6 +277,11 @@ class ProjectServer:
             for tool in runtime.agent.get_exposed_tool_instances()
             if tool.get_name() != "activate_project"
         ]
+        if req.session_id:
+            with self._mcp_runtimes_lock:
+                runtime.bridge_sessions.add(req.session_id)
+                runtime.last_access = time.monotonic()
+
         context = runtime.agent.get_context()
         return MCPRuntimeInfoResponse(
             project_root=runtime.project_root,
@@ -270,6 +289,14 @@ class ProjectServer:
             instructions=runtime.agent.create_connection_prompt(),
             structured_tool_output=context.structured_tool_output,
         )
+
+    def _close_mcp_bridge(self, req: MCPBridgeCloseRequest) -> None:
+        key = self._mcp_runtime_key(req.project_root, req.context)
+        with self._mcp_runtimes_lock:
+            runtime = self._mcp_runtimes.get(key)
+            if runtime is not None:
+                runtime.bridge_sessions.discard(req.session_id)
+                runtime.last_access = time.monotonic()
 
     def _call_mcp_tool(self, req: MCPToolCallRequest) -> str:
         runtime = self._get_mcp_runtime(req.project_root, req.context)
@@ -303,6 +330,8 @@ class ProjectServer:
                 (key, runtime)
                 for key, runtime in self._mcp_runtimes.items()
                 if runtime.active_calls == 0
+                and not runtime.bridge_sessions
+                and not runtime.agent.get_current_tasks()
             ]
 
             # Time-based eviction.
@@ -443,8 +472,8 @@ class ProjectServerClient:
         except requests_lib.RequestException as e:
             raise ConnectionError(f"ProjectServer health check failed: {e}")
 
-    def get_mcp_runtime_info(self, project_root: str, context: str) -> MCPRuntimeInfoResponse:
-        payload = MCPRuntimeInfoRequest(project_root=project_root, context=context).model_dump()
+    def get_mcp_runtime_info(self, project_root: str, context: str, session_id: str | None = None) -> MCPRuntimeInfoResponse:
+        payload = MCPRuntimeInfoRequest(project_root=project_root, context=context, session_id=session_id).model_dump()
         response = requests_lib.post(
             f"{self._base_url}/mcp/runtime-info",
             json=payload,
@@ -454,6 +483,19 @@ class ProjectServerClient:
         if not response.ok:
             raise ValueError(f"Shared MCP daemon error ({response.status_code}): {response.text[:2000]}")
         return MCPRuntimeInfoResponse.model_validate_json(response.text)
+
+    def close_mcp_bridge(self, project_root: str, context: str, session_id: str) -> None:
+        payload = MCPBridgeCloseRequest(project_root=project_root, context=context, session_id=session_id).model_dump()
+        try:
+            requests_lib.post(
+                f"{self._base_url}/mcp/bridge-close",
+                json=payload,
+                headers=self._headers,
+                timeout=5,
+            )
+        except requests_lib.RequestException:
+            # Bridge shutdown is best-effort; the daemon can eventually evict a stale runtime.
+            pass
 
     def call_mcp_tool(
         self,
