@@ -9,6 +9,22 @@ import requests
 
 from serena.config.serena_config import SerenaConfig
 from serena.constants import SerenaPorts
+from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_build_id
+
+
+class IncompatibleSharedMCPDaemonError(ConnectionError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        pid: int | None = None,
+        server_protocol_version: int | None = None,
+        server_build_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.pid = pid
+        self.server_protocol_version = server_protocol_version
+        self.server_build_id = server_build_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +55,28 @@ class SharedMCPDaemonClient:
             raise ConnectionError(f"Shared Serena daemon is not reachable at {self._base_url}") from e
         except requests.RequestException as e:
             raise ConnectionError(f"Shared Serena daemon health check failed: {e}") from e
+
+        try:
+            heartbeat = response.json()
+        except ValueError as e:
+            raise IncompatibleSharedMCPDaemonError(
+                "Shared Serena daemon returned an invalid heartbeat payload"
+            ) from e
+
+        server_protocol = heartbeat.get("shared_mcp_protocol_version")
+        server_build_id = heartbeat.get("shared_mcp_build_id")
+        server_pid = heartbeat.get("pid")
+        pid = server_pid if isinstance(server_pid, int) else None
+        expected_build_id = shared_mcp_build_id()
+        if server_protocol != SHARED_MCP_PROTOCOL_VERSION or server_build_id != expected_build_id:
+            raise IncompatibleSharedMCPDaemonError(
+                "Shared Serena daemon is stale/incompatible "
+                f"(protocol={server_protocol!r}, build={server_build_id!r}; "
+                f"expected protocol={SHARED_MCP_PROTOCOL_VERSION}, build={expected_build_id})",
+                pid=pid,
+                server_protocol_version=server_protocol if isinstance(server_protocol, int) else None,
+                server_build_id=server_build_id if isinstance(server_build_id, str) else None,
+            )
 
     def get_runtime_info(self, project_root: str, context: str, session_id: str | None = None) -> SharedMCPRuntimeInfo:
         response = requests.post(

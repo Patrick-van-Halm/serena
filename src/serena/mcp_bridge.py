@@ -25,7 +25,7 @@ from sensai.util import logging
 from serena import __version__
 from serena.config.context_mode import SerenaAgentContext
 from serena.config.serena_config import SerenaConfig, SerenaPaths
-from serena.shared_mcp_client import SharedMCPDaemonClient
+from serena.shared_mcp_client import IncompatibleSharedMCPDaemonError, SharedMCPDaemonClient
 from serena.tools import Tool, ToolCallError, ToolRegistry
 
 log = logging.getLogger(__name__)
@@ -204,11 +204,87 @@ def _spawn_shared_daemon() -> subprocess.Popen:
     return subprocess.Popen(_daemon_command(), **kwargs)
 
 
+def _find_project_server_pid() -> int | None:
+    """Find the process listening on Serena's project-server port, only when it is clearly Serena."""
+    try:
+        import psutil
+
+        from serena.constants import SerenaPorts
+
+        for connection in psutil.net_connections(kind="tcp"):
+            if connection.pid is None or connection.status != psutil.CONN_LISTEN:
+                continue
+            if not connection.laddr or connection.laddr.port != SerenaPorts.PROJECT_SERVER_PORT:
+                continue
+            try:
+                process = psutil.Process(connection.pid)
+                command = " ".join(process.cmdline())
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            if "serena" in command and "start-project-server" in command:
+                return connection.pid
+    except Exception as e:
+        log.debug("Unable to discover stale shared daemon by port: %s", e)
+    return None
+
+
+def _terminate_stale_daemon(pid: int | None) -> None:
+    """
+    Terminate a stale daemon and its independent language-server descendants.
+
+    SolidLSP intentionally launches LSP processes in their own sessions, so killing only
+    the daemon can orphan several GB of language-server processes. Capture and terminate
+    the full descendant tree first.
+    """
+    if pid is None:
+        pid = _find_project_server_pid()
+    if pid is None:
+        raise ConnectionError("Found an incompatible shared Serena daemon but could not identify its process")
+
+    import psutil
+
+    try:
+        process = psutil.Process(pid)
+        command = " ".join(process.cmdline())
+    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
+        raise ConnectionError(f"Could not inspect incompatible Serena daemon pid={pid}") from e
+
+    if "serena" not in command or "start-project-server" not in command:
+        raise ConnectionError(
+            f"Refusing to terminate pid={pid}: process is not recognisably a Serena project server ({command!r})"
+        )
+
+    descendants = process.children(recursive=True)
+    log.info(
+        "Replacing stale shared Serena daemon pid=%s with %d descendant process(es)",
+        pid,
+        len(descendants),
+    )
+    for child in reversed(descendants):
+        try:
+            child.terminate()
+        except psutil.NoSuchProcess:
+            pass
+    try:
+        process.terminate()
+    except psutil.NoSuchProcess:
+        pass
+
+    _, alive = psutil.wait_procs([*descendants, process], timeout=5.0)
+    for remaining in alive:
+        try:
+            remaining.kill()
+        except psutil.NoSuchProcess:
+            pass
+    if alive:
+        psutil.wait_procs(alive, timeout=2.0)
+
+
 def ensure_shared_daemon(serena_config: SerenaConfig, startup_timeout: float = 30.0) -> SharedMCPDaemonClient:
     """Return the singleton daemon client, starting the daemon if necessary."""
     try:
         return SharedMCPDaemonClient(serena_config)
-    except ConnectionError:
+    except (ConnectionError, IncompatibleSharedMCPDaemonError):
         pass
 
     home = Path(SerenaPaths().serena_user_home_dir)
@@ -219,6 +295,8 @@ def ensure_shared_daemon(serena_config: SerenaConfig, startup_timeout: float = 3
         # Another bridge may have completed startup while this process waited.
         try:
             return SharedMCPDaemonClient(serena_config)
+        except IncompatibleSharedMCPDaemonError as e:
+            _terminate_stale_daemon(e.pid)
         except ConnectionError:
             pass
 

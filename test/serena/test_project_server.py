@@ -29,6 +29,7 @@ from serena.project_server import (
 def project_server() -> ProjectServer:
     server = ProjectServer.__new__(ProjectServer)
     server._agent = MagicMock()
+    server._serena_config = server._agent.serena_config
     server._loaded_projects_by_root = {}
     server._project_load_locks_by_root = {}
     server._active_project_lock = threading.Lock()
@@ -407,3 +408,20 @@ def test_shared_mcp_heartbeat_renews_bridge_lease(project_server: ProjectServer,
 
     assert "chat-1" in runtime.bridge_sessions
     assert runtime.bridge_sessions["chat-1"] > 0
+
+
+
+def test_project_server_heartbeat_exposes_shared_runtime_identity(project_server: ProjectServer) -> None:
+    project_server._agent.serena_config.auth_secret = "heartbeat-secret"
+    project_server._app = Flask(__name__)
+    project_server._setup_routes()
+
+    with project_server._app.test_client() as client:
+        response = client.get("/heartbeat", headers={"Authorization": "Bearer heartbeat-secret"})
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["status"] == "alive"
+    assert isinstance(payload["shared_mcp_protocol_version"], int)
+    assert isinstance(payload["shared_mcp_build_id"], str)
+    assert payload["pid"] > 0

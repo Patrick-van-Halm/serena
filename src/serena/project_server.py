@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import pickle
 import secrets
 import threading
@@ -17,6 +18,7 @@ from sensai.util.logging import LogTime
 
 from serena.config.serena_config import LanguageBackend, SerenaConfig
 from serena.constants import SerenaPorts
+from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_build_id
 
 if TYPE_CHECKING:
     from serena.agent import SerenaAgent
@@ -123,15 +125,14 @@ class ProjectServer:
         :param host: the host address to listen on.
         :param port: the port to listen on; if None, use default
         """
-        from serena.agent import SerenaAgent
-
         if port is None:
             port = self.PORT
 
         serena_config = SerenaConfig.from_config_file().with_headless_mode_overrides()
         serena_config.language_backend = LanguageBackend.LSP
 
-        self._agent = SerenaAgent(serena_config=serena_config)
+        self._serena_config = serena_config
+        self._agent: "SerenaAgent | None" = None
         self._loaded_projects_by_root: dict[str, "Project"] = {}
         self._project_load_locks_by_root: dict[str, threading.Lock] = {}
         self._active_project_lock = threading.Lock()
@@ -158,11 +159,21 @@ class ProjectServer:
         threading.Thread(target=self._mcp_runtime_eviction_loop, name="SerenaMCPRuntimeEviction", daemon=True).start()
 
     def get_serena_config(self) -> SerenaConfig:
-        return self._agent.serena_config
+        # Tests and legacy callers may inject an agent directly; prefer its config when present.
+        if self._agent is not None:
+            return self._agent.serena_config
+        return self._serena_config
+
+    def _get_legacy_agent(self) -> "SerenaAgent":
+        if self._agent is None:
+            from serena.agent import SerenaAgent
+
+            self._agent = SerenaAgent(serena_config=self._serena_config)
+        return self._agent
 
     def get_auth_secret(self) -> str:
         """Returns the authentication secret used by the server."""
-        return self._agent.serena_config.auth_secret
+        return self.get_serena_config().auth_secret
 
     def _setup_routes(self) -> None:
         @self._app.before_request
@@ -174,8 +185,13 @@ class ProjectServer:
                 abort(401)
 
         @self._app.route("/heartbeat", methods=["GET"])
-        def heartbeat() -> dict[str, str]:
-            return {"status": "alive"}
+        def heartbeat() -> dict[str, str | int]:
+            return {
+                "status": "alive",
+                "shared_mcp_protocol_version": SHARED_MCP_PROTOCOL_VERSION,
+                "shared_mcp_build_id": shared_mcp_build_id(),
+                "pid": os.getpid(),
+            }
 
         @self._app.route("/query_project", methods=["POST"])
         def query_project() -> str:
@@ -415,7 +431,7 @@ class ProjectServer:
 
     def _get_project(self, project_root_or_name: str) -> "Project":
         """Gets the project with the given name, loading it if necessary."""
-        serena_config = self._agent.serena_config
+        serena_config = self.get_serena_config()
         registered_project = serena_config.get_registered_project(project_root_or_name)
         if registered_project is None:
             raise ValueError(f"Project '{project_root_or_name}' is not registered with Serena.")
@@ -456,8 +472,9 @@ class ProjectServer:
         redirect that tool to the wrong project (and restore the wrong project afterwards).
         """
         project = self._get_project(req.project_name)
-        with self._active_project_lock, self._agent.active_project_context(project):
-            tool = self._agent.get_tool_by_name(req.tool_name)
+        agent = self._get_legacy_agent()
+        with self._active_project_lock, agent.active_project_context(project):
+            tool = agent.get_tool_by_name(req.tool_name)
             if not tool.is_readonly():
                 raise ValueError(f"Tool '{req.tool_name}' is not read-only and cannot be executed via the query_project route")
             params = json.loads(req.tool_params_json)
@@ -469,10 +486,11 @@ class ProjectServer:
         context of the specified project (see `_query_project` regarding the lock).
         """
         project = self._get_project(req.project_name)
-        with self._active_project_lock, self._agent.active_project_context(project):
-            facade = self._agent.get_repl().entrypoint.get_facade_(req.facade_name)
+        agent = self._get_legacy_agent()
+        with self._active_project_lock, agent.active_project_context(project):
+            facade = agent.get_repl().entrypoint.get_facade_(req.facade_name)
             method = facade.get_method(req.method_name)
-            return self._agent.execute_task(lambda: method(*req.args, **req.kwargs))
+            return agent.execute_task(lambda: method(*req.args, **req.kwargs))
 
     def run(self) -> None:
         """

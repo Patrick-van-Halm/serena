@@ -4,7 +4,13 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from serena.config.context_mode import SerenaAgentContext
-from serena.mcp_bridge import BridgeFastMCPTool, SerenaMCPBridge, _BridgeAgent, _daemon_command
+from serena.mcp_bridge import (
+    BridgeFastMCPTool,
+    SerenaMCPBridge,
+    _BridgeAgent,
+    _daemon_command,
+    _terminate_stale_daemon,
+)
 from serena.tools import ToolRegistry
 
 
@@ -122,3 +128,16 @@ def test_proxy_tool_marks_bridge_as_used() -> None:
     assert bridge._has_seen_tool_call is True
     assert bridge._active_tool_calls == 0
     assert bridge._last_client_activity > before
+
+
+
+def test_stale_daemon_termination_refuses_unrelated_process(monkeypatch) -> None:
+    import psutil
+    import pytest
+
+    process = MagicMock()
+    process.cmdline.return_value = ["python", "unrelated.py"]
+    monkeypatch.setattr(psutil, "Process", lambda pid: process)
+
+    with pytest.raises(ConnectionError, match="Refusing to terminate"):
+        _terminate_stale_daemon(12345)
