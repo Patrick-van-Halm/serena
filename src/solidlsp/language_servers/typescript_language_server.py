@@ -95,6 +95,10 @@ class TypeScriptLanguageServer(SolidLanguageServer):
         - server_ready_timeout: float, timeout in seconds for the server-ready signal (default: 10.0)
         - indexing_start_grace: float, timeout in seconds to wait for tsserver to *start*
           reporting indexing progress before the first cross-file reference query (default: 5.0)
+        - use_syntax_server: "never" or "auto". "never" (Serena default) keeps a single
+          tsserver process instead of spawning a second syntax worker.
+        - max_ts_server_memory_mb: optional maximum V8 old-space size for tsserver, in MB.
+          By default Serena leaves this unset so Node/TypeScript can choose dynamically.
     """
 
     @classmethod
@@ -332,16 +336,40 @@ class TypeScriptLanguageServer(SolidLanguageServer):
             return "javascriptreact"
         return self.language_id
 
+    def _get_use_syntax_server(self) -> str:
+        value = str(self._custom_settings.get("use_syntax_server", "never"))
+        if value not in {"never", "auto"}:
+            raise ValueError(f"Invalid TypeScript use_syntax_server value {value!r}; expected 'never' or 'auto'")
+        return value
+
+    def _get_max_ts_server_memory_mb(self) -> int | None:
+        value = self._custom_settings.get("max_ts_server_memory_mb", None)
+        if value is None:
+            return None
+        memory_mb = int(value)
+        if memory_mb < 256:
+            raise ValueError("TypeScript max_ts_server_memory_mb must be at least 256 MB")
+        return memory_mb
+
     def _create_base_initialize_params(self) -> dict:
+        initialization_options: dict[str, Any] = {
+            "disableAutomaticTypingAcquisition": True,
+            # typescript-language-server defaults to "auto", which starts both the
+            # full semantic server and a second syntax-only worker. Serena's symbolic
+            # operations work with the full server, so avoid the duplicate process/RSS.
+            "tsserver": {"useSyntaxServer": self._get_use_syntax_server()},
+        }
+        max_memory_mb = self._get_max_ts_server_memory_mb()
+        if max_memory_mb is not None:
+            initialization_options["maxTsServerMemory"] = max_memory_mb
+
         initialize_params = {
             "locale": "en",
             # Disable Automatic Type Acquisition (ATA): with ATA enabled, tsserver fetches
             # @types/* packages from npm in the background during indexing, which makes startup
             # slow, network-dependent, and nondeterministic (and can hang on offline/locked-down
             # machines). Serena relies on the types already installed in the project instead.
-            "initializationOptions": {
-                "disableAutomaticTypingAcquisition": True,
-            },
+            "initializationOptions": initialization_options,
             "capabilities": {
                 "textDocument": {
                     "synchronization": {"didSave": True, "dynamicRegistration": True},

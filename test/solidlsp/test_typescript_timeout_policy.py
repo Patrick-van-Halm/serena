@@ -72,6 +72,26 @@ class TestBaseTypeScriptTimeoutPolicy:
         server = _bare_ts_server(TypeScriptLanguageServer, {"indexing_start_grace": 12.0})
         assert server._get_indexing_start_grace() == 12.0
 
+    def test_default_initialization_uses_single_tsserver(self) -> None:
+        server = _bare_ts_server(TypeScriptLanguageServer)
+        params = server._create_base_initialize_params()
+        assert params["initializationOptions"]["tsserver"]["useSyntaxServer"] == "never"
+        assert "maxTsServerMemory" not in params["initializationOptions"]
+
+    def test_typescript_memory_and_syntax_server_settings_are_configurable(self) -> None:
+        server = _bare_ts_server(
+            TypeScriptLanguageServer,
+            {"use_syntax_server": "auto", "max_ts_server_memory_mb": 1536},
+        )
+        params = server._create_base_initialize_params()
+        assert params["initializationOptions"]["tsserver"]["useSyntaxServer"] == "auto"
+        assert params["initializationOptions"]["maxTsServerMemory"] == 1536
+
+    def test_typescript_memory_limit_rejects_tiny_values(self) -> None:
+        server = _bare_ts_server(TypeScriptLanguageServer, {"max_ts_server_memory_mb": 128})
+        with pytest.raises(ValueError, match="at least 256"):
+            server._create_base_initialize_params()
+
 
 class TestSvelteCompanionTimeoutPolicy:
     """The Svelte companion must be strict: raise instead of serving from a cold/partial program."""
