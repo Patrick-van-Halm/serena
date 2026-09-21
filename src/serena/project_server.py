@@ -5,6 +5,9 @@ import logging
 import pickle
 import secrets
 import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import requests as requests_lib
@@ -16,6 +19,7 @@ from serena.config.serena_config import LanguageBackend, SerenaConfig
 from serena.constants import SerenaPorts
 
 if TYPE_CHECKING:
+    from serena.agent import SerenaAgent
     from serena.project import Project
 
 log = logging.getLogger(__name__)
@@ -35,6 +39,41 @@ class QueryProjectRequest(BaseModel):
     tool_params_json: str
 
 
+class MCPRuntimeInfoRequest(BaseModel):
+    """Request the shared MCP runtime metadata for a project/context pair."""
+
+    project_root: str
+    context: str = "codex"
+
+
+class MCPRuntimeInfoResponse(BaseModel):
+    project_root: str
+    tool_names: list[str]
+    instructions: str
+    structured_tool_output: bool | None = None
+
+
+class MCPToolCallRequest(BaseModel):
+    """Execute one MCP tool against a shared project runtime."""
+
+    project_root: str
+    context: str = "codex"
+    session_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+
+
+@dataclass
+class MCPProjectRuntime:
+    """Long-lived project-scoped agent reused by multiple MCP bridge processes."""
+
+    agent: "SerenaAgent"
+    project_root: str
+    context: str
+    last_access: float
+    active_calls: int = 0
+
+
 class CallFacadeMethodRequest(BaseModel):
     """
     Request model for the /call_facade_method endpoint: the execution of a REPL facade method
@@ -49,6 +88,10 @@ class CallFacadeMethodRequest(BaseModel):
 
 
 class ProjectServer:
+    MCP_RUNTIME_IDLE_SECONDS = 30 * 60
+    MCP_RUNTIME_MAX_PROJECTS = 4
+    MCP_RUNTIME_EVICTION_INTERVAL_SECONDS = 60
+
     """
     A lightweight Flask server that exposes a SerenaAgent's project querying
     capabilities via HTTP, using the LSP language server backend for symbolic retrieval.
@@ -80,6 +123,15 @@ class ProjectServer:
         self._project_load_locks_by_root: dict[str, threading.Lock] = {}
         self._active_project_lock = threading.Lock()
         self._loaded_projects_lock = threading.Lock()
+
+        # Shared MCP runtimes are independent of the legacy read-only query route above.
+        # Each canonical project/context pair owns exactly one SerenaAgent (and therefore
+        # one LSP manager/cache set), reused by every bridge/chat targeting that project.
+        self._mcp_runtimes: dict[tuple[str, str], MCPProjectRuntime] = {}
+        self._mcp_runtime_load_locks: dict[tuple[str, str], threading.Lock] = {}
+        self._mcp_runtimes_lock = threading.Lock()
+        self._mcp_runtime_stop_event = threading.Event()
+
         self._port = port
         self._host = host
 
@@ -90,6 +142,7 @@ class ProjectServer:
             self._app.config["TRUSTED_HOSTS"] = local_hosts
 
         self._setup_routes()
+        threading.Thread(target=self._mcp_runtime_eviction_loop, name="SerenaMCPRuntimeEviction", daemon=True).start()
 
     def get_serena_config(self) -> SerenaConfig:
         return self._agent.serena_config
@@ -116,6 +169,26 @@ class ProjectServer:
             query_request = QueryProjectRequest.model_validate(request.get_json())
             return self._query_project(query_request)
 
+        @self._app.route("/mcp/runtime-info", methods=["POST"])
+        def mcp_runtime_info() -> Response:
+            req = MCPRuntimeInfoRequest.model_validate(request.get_json())
+            try:
+                info = self._get_mcp_runtime_info(req)
+            except Exception as e:
+                log.warning("Shared MCP runtime setup failed: %s", e)
+                return Response(f"{type(e).__name__}: {e}", status=400, mimetype="text/plain")
+            return Response(info.model_dump_json(), mimetype="application/json")
+
+        @self._app.route("/mcp/tool-call", methods=["POST"])
+        def mcp_tool_call() -> Response:
+            req = MCPToolCallRequest.model_validate(request.get_json())
+            try:
+                result = self._call_mcp_tool(req)
+            except Exception as e:
+                log.warning("Shared MCP tool call failed: %s", e)
+                return Response(f"{type(e).__name__}: {e}", status=400, mimetype="text/plain")
+            return Response(result, mimetype="text/plain")
+
         @self._app.route("/call_facade_method", methods=["POST"])
         def call_facade_method() -> Response:
             call_request = CallFacadeMethodRequest.model_validate(request.get_json())
@@ -127,6 +200,142 @@ class ProjectServer:
                 return Response(f"{type(e).__name__}: {e}", status=400, mimetype="text/plain")
             # NOTE: the result is pickled; the client (a Serena instance on the same machine) unpickles it
             return Response(pickle.dumps(result), mimetype="application/octet-stream")
+
+    @staticmethod
+    def _mcp_runtime_key(project_root: str, context: str) -> tuple[str, str]:
+        root = Path(project_root).expanduser().resolve()
+        if not root.is_dir():
+            raise FileNotFoundError(f"Shared MCP project root is not a directory: {root}")
+        return str(root), context
+
+    def _get_mcp_runtime(self, project_root: str, context: str) -> MCPProjectRuntime:
+        key = self._mcp_runtime_key(project_root, context)
+
+        with self._mcp_runtimes_lock:
+            runtime = self._mcp_runtimes.get(key)
+            if runtime is not None:
+                runtime.last_access = time.monotonic()
+                return runtime
+            load_lock = self._mcp_runtime_load_locks.get(key)
+            if load_lock is None:
+                load_lock = threading.Lock()
+                self._mcp_runtime_load_locks[key] = load_lock
+
+        with load_lock:
+            with self._mcp_runtimes_lock:
+                runtime = self._mcp_runtimes.get(key)
+                if runtime is not None:
+                    runtime.last_access = time.monotonic()
+                    return runtime
+
+            from serena.agent import SerenaAgent
+            from serena.config.context_mode import SerenaAgentContext
+
+            # The shared daemon owns project services, so per-project dashboards/GUI windows
+            # would only multiply memory and ports. Keep runtime agents headless.
+            config = SerenaConfig.from_config_file().with_headless_mode_overrides()
+            agent = SerenaAgent(project=key[0], serena_config=config, context=SerenaAgentContext.load(context))
+            active_project = agent.get_active_project()
+            if active_project is None:
+                agent.on_shutdown()
+                raise ValueError(f"Failed to activate shared MCP project {key[0]!r}")
+
+            runtime = MCPProjectRuntime(
+                agent=agent,
+                project_root=active_project.project_root,
+                context=context,
+                last_access=time.monotonic(),
+            )
+            with self._mcp_runtimes_lock:
+                self._mcp_runtimes[key] = runtime
+                self._mcp_runtime_load_locks.pop(key, None)
+
+            self._evict_mcp_runtimes()
+            log.info("Created shared MCP runtime for %s (context=%s)", runtime.project_root, context)
+            return runtime
+
+    def _get_mcp_runtime_info(self, req: MCPRuntimeInfoRequest) -> MCPRuntimeInfoResponse:
+        runtime = self._get_mcp_runtime(req.project_root, req.context)
+        # Project selection is owned by the bridge/router. Exposing activate_project would
+        # let one conversation retarget the shared agent underneath other conversations.
+        tool_names = [
+            tool.get_name()
+            for tool in runtime.agent.get_exposed_tool_instances()
+            if tool.get_name() != "activate_project"
+        ]
+        context = runtime.agent.get_context()
+        return MCPRuntimeInfoResponse(
+            project_root=runtime.project_root,
+            tool_names=tool_names,
+            instructions=runtime.agent.create_connection_prompt(),
+            structured_tool_output=context.structured_tool_output,
+        )
+
+    def _call_mcp_tool(self, req: MCPToolCallRequest) -> str:
+        runtime = self._get_mcp_runtime(req.project_root, req.context)
+        if req.tool_name == "activate_project":
+            raise ValueError("activate_project is disabled for shared MCP runtimes; project routing is bridge-controlled")
+
+        exposed_names = {tool.get_name() for tool in runtime.agent.get_exposed_tool_instances()}
+        if req.tool_name not in exposed_names:
+            raise ValueError(f"Tool {req.tool_name!r} is not exposed by this shared runtime")
+
+        with self._mcp_runtimes_lock:
+            runtime.active_calls += 1
+            runtime.last_access = time.monotonic()
+        try:
+            tool = runtime.agent.get_tool_by_name(req.tool_name)
+            return tool.apply_ex(
+                catch_exceptions=False,
+                session_id_override=req.session_id,
+                **req.arguments,
+            )
+        finally:
+            with self._mcp_runtimes_lock:
+                runtime.active_calls -= 1
+                runtime.last_access = time.monotonic()
+
+    def _evict_mcp_runtimes(self) -> None:
+        now = time.monotonic()
+        evicted: list[MCPProjectRuntime] = []
+        with self._mcp_runtimes_lock:
+            inactive = [
+                (key, runtime)
+                for key, runtime in self._mcp_runtimes.items()
+                if runtime.active_calls == 0
+            ]
+
+            # Time-based eviction.
+            for key, runtime in inactive:
+                if now - runtime.last_access >= self.MCP_RUNTIME_IDLE_SECONDS:
+                    self._mcp_runtimes.pop(key, None)
+                    evicted.append(runtime)
+
+            # Capacity-based LRU eviction after the idle pass.
+            if len(self._mcp_runtimes) > self.MCP_RUNTIME_MAX_PROJECTS:
+                remaining_inactive = sorted(
+                    (
+                        (key, runtime)
+                        for key, runtime in self._mcp_runtimes.items()
+                        if runtime.active_calls == 0
+                    ),
+                    key=lambda item: item[1].last_access,
+                )
+                while len(self._mcp_runtimes) > self.MCP_RUNTIME_MAX_PROJECTS and remaining_inactive:
+                    key, runtime = remaining_inactive.pop(0)
+                    self._mcp_runtimes.pop(key, None)
+                    evicted.append(runtime)
+
+        for runtime in evicted:
+            log.info("Evicting shared MCP runtime for %s (context=%s)", runtime.project_root, runtime.context)
+            try:
+                runtime.agent.on_shutdown()
+            except Exception as e:
+                log.error("Failed to shut down evicted shared MCP runtime", exc_info=e)
+
+    def _mcp_runtime_eviction_loop(self) -> None:
+        while not self._mcp_runtime_stop_event.wait(self.MCP_RUNTIME_EVICTION_INTERVAL_SECONDS):
+            self._evict_mcp_runtimes()
 
     def _get_project(self, project_root_or_name: str) -> "Project":
         """Gets the project with the given name, loading it if necessary."""
@@ -233,6 +442,43 @@ class ProjectServerClient:
             raise ConnectionError(f"ProjectServer is not reachable at {self._base_url}. Make sure the server is running.")
         except requests_lib.RequestException as e:
             raise ConnectionError(f"ProjectServer health check failed: {e}")
+
+    def get_mcp_runtime_info(self, project_root: str, context: str) -> MCPRuntimeInfoResponse:
+        payload = MCPRuntimeInfoRequest(project_root=project_root, context=context).model_dump()
+        response = requests_lib.post(
+            f"{self._base_url}/mcp/runtime-info",
+            json=payload,
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if not response.ok:
+            raise ValueError(f"Shared MCP daemon error ({response.status_code}): {response.text[:2000]}")
+        return MCPRuntimeInfoResponse.model_validate_json(response.text)
+
+    def call_mcp_tool(
+        self,
+        project_root: str,
+        context: str,
+        session_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> str:
+        payload = MCPToolCallRequest(
+            project_root=project_root,
+            context=context,
+            session_id=session_id,
+            tool_name=tool_name,
+            arguments=arguments,
+        ).model_dump()
+        response = requests_lib.post(
+            f"{self._base_url}/mcp/tool-call",
+            json=payload,
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if not response.ok:
+            raise ValueError(f"Shared MCP daemon error ({response.status_code}): {response.text[:2000]}")
+        return response.text
 
     def query_project(self, project_name: str, tool_name: str, tool_params_json: str) -> str:
         """

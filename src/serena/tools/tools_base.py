@@ -327,7 +327,14 @@ class Tool(Component):
         """
         return {}
 
-    def apply_ex(self, log_call: bool = True, catch_exceptions: bool = True, mcp_ctx: Context | None = None, **kwargs) -> str:
+    def apply_ex(
+        self,
+        log_call: bool = True,
+        catch_exceptions: bool = True,
+        mcp_ctx: Context | None = None,
+        session_id_override: str | None = None,
+        **kwargs,
+    ) -> str:
         """
         Applies the tool with logging and exception handling, using the given keyword arguments.
         This method either returns a string result or raises a ToolCallError in case of an error during tool application
@@ -336,9 +343,11 @@ class Tool(Component):
         :param log_call: whether to log the tool call and its result
         :param catch_exceptions: whether to catch exceptions and return their messages as strings, instead of raising a ToolCallError
         """
-        # obtain session ID and client info
-        session_id = "global"
-        if mcp_ctx is not None:
+        # obtain session ID and client info. The explicit override is used by the
+        # lightweight MCP bridge so several Codex conversations can share one daemon
+        # while retaining independent Serena session/REPL state.
+        session_id = session_id_override or "global"
+        if mcp_ctx is not None and session_id_override is None:
             try:
                 session_id = "%x" % id(mcp_ctx.session)
                 client_params = mcp_ctx.session.client_params

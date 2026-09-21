@@ -12,7 +12,14 @@ from flask import Flask
 from werkzeug.serving import make_server
 
 from serena.config.serena_config import SerenaConfig
-from serena.project_server import ProjectServer, ProjectServerClient, QueryProjectRequest
+from serena.project_server import (
+    MCPProjectRuntime,
+    MCPRuntimeInfoRequest,
+    MCPToolCallRequest,
+    ProjectServer,
+    ProjectServerClient,
+    QueryProjectRequest,
+)
 
 
 @pytest.fixture
@@ -247,3 +254,66 @@ def test_concurrent_queries_serialize_active_project_context(project_server: Pro
 
         assert first_future.result(timeout=1) == "first"
         assert second_future.result(timeout=1) == "second"
+
+
+
+def test_shared_mcp_runtime_info_reuses_project_agent(project_server: ProjectServer, monkeypatch: pytest.MonkeyPatch) -> None:
+    server = cast(Any, project_server)
+    server._mcp_runtimes = {}
+    server._mcp_runtime_load_locks = {}
+    server._mcp_runtimes_lock = threading.Lock()
+
+    agent = MagicMock()
+    project = MagicMock(project_root="/project")
+    agent.get_active_project.return_value = project
+    tool = MagicMock()
+    tool.get_name.return_value = "find_symbol"
+    agent.get_exposed_tool_instances.return_value = [tool]
+    agent.create_connection_prompt.return_value = "instructions"
+    agent.get_context.return_value.structured_tool_output = None
+
+    monkeypatch.setattr(server, "_mcp_runtime_key", lambda root, context: ("/project", context))
+    runtime = MCPProjectRuntime(agent=agent, project_root="/project", context="codex", last_access=0.0)
+    server._mcp_runtimes[("/project", "codex")] = runtime
+
+    first = server._get_mcp_runtime_info(MCPRuntimeInfoRequest(project_root="/project", context="codex"))
+    second = server._get_mcp_runtime_info(MCPRuntimeInfoRequest(project_root="/project", context="codex"))
+
+    assert first.project_root == second.project_root == "/project"
+    assert first.tool_names == ["find_symbol"]
+    assert first.instructions == "instructions"
+    assert server._mcp_runtimes[("/project", "codex")].agent is agent
+
+
+def test_shared_mcp_tool_call_forwards_bridge_session_id(project_server: ProjectServer, monkeypatch: pytest.MonkeyPatch) -> None:
+    server = cast(Any, project_server)
+    server._mcp_runtimes = {}
+    server._mcp_runtime_load_locks = {}
+    server._mcp_runtimes_lock = threading.Lock()
+
+    tool = MagicMock()
+    tool.get_name.return_value = "serena_repl"
+    tool.apply_ex.return_value = "ok"
+    agent = MagicMock()
+    agent.get_exposed_tool_instances.return_value = [tool]
+    agent.get_tool_by_name.return_value = tool
+    runtime = MCPProjectRuntime(agent=agent, project_root="/project", context="codex", last_access=0.0)
+    monkeypatch.setattr(server, "_get_mcp_runtime", lambda root, context: runtime)
+
+    result = server._call_mcp_tool(
+        MCPToolCallRequest(
+            project_root="/project",
+            context="codex",
+            session_id="chat-a",
+            tool_name="serena_repl",
+            arguments={"code": "1 + 1"},
+        )
+    )
+
+    assert result == "ok"
+    tool.apply_ex.assert_called_once_with(
+        catch_exceptions=False,
+        session_id_override="chat-a",
+        code="1 + 1",
+    )
+    assert runtime.active_calls == 0
