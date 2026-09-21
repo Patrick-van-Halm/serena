@@ -17,7 +17,7 @@ def test_proxy_tool_forwards_to_shared_runtime() -> None:
     bridge.context = SerenaAgentContext.from_name("codex")
     bridge.session_id = "chat-1"
     bridge.client = MagicMock()
-    bridge.client.call_mcp_tool.return_value = "remote-result"
+    bridge.client.call_tool.return_value = "remote-result"
 
     tool_class = ToolRegistry().get_tool_class_by_name("search_for_pattern")
     proxy_class = bridge._proxy_tool_class(tool_class)
@@ -26,7 +26,7 @@ def test_proxy_tool_forwards_to_shared_runtime() -> None:
     result = proxy.apply_ex(substring_pattern="needle", relative_path="src")
 
     assert result == "remote-result"
-    bridge.client.call_mcp_tool.assert_called_once_with(
+    bridge.client.call_tool.assert_called_once_with(
         project_root="/repo",
         context="codex",
         session_id="chat-1",
