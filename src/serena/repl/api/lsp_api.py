@@ -162,7 +162,13 @@ class LspSymbolCollectionRenderer(Renderer[LspSymbolCollection]):
         return self._grouper.group(symbol_dicts, copy_input=copy_input) if self._grouper is not None else symbol_dicts
 
     def _minimum_value_chars(self, obj: LspSymbolCollection) -> int:
-        """Cheap lower bound using values that must survive grouping."""
+        """
+        Lower bound using values that cannot be removed by grouping.
+
+        Bodies are measured one at a time. SymbolBody now reads lazily from disk and does
+        not retain the text, so this bounds peak collection memory while avoiding a second
+        persistent source copy in the symbol cache.
+        """
         p = self._output_params
         total = 0
         if p.name_path:
@@ -170,6 +176,15 @@ class LspSymbolCollectionRenderer(Renderer[LspSymbolCollection]):
         elif p.name:
             total += sum(len(symbol.name) for symbol in obj.symbols)
         total += sum(len(info) for info in obj.info_by_symbol_.values())
+
+        if p.include_body:
+            limit = self._get_max_answer_chars()
+            for symbol in obj.symbols:
+                body = symbol.body
+                if body is not None:
+                    total += len(body)
+                    if total > limit:
+                        break
         return total
 
     def render(self, obj: LspSymbolCollection) -> str:
