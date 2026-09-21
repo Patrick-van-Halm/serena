@@ -46,3 +46,34 @@ def test_search_for_pattern_snippet_stage(tmp_path):
     # tighter cap: the chain degrades past the snippet stage to bare line numbers
     bare = run(1000)
     assert "Match lines per file" in bare and '"text":' not in bare
+
+
+
+def test_search_for_pattern_many_matches_on_one_huge_line_is_memory_bounded(tmp_path, monkeypatch):
+    # This models minified/generated files: the same very long line can contain thousands of
+    # regex hits. Rendering that full line once per hit used to create enormous temporary strings.
+    huge_line = "MATCHME " * 20_000
+    (tmp_path / "minified.txt").write_text(huge_line, encoding="utf-8")
+
+    project = Project.load(str(tmp_path), serena_config=SerenaConfig(gui_log_window=False, web_dashboard=False))
+    agent = MagicMock()
+    agent.get_active_project_or_raise.return_value = project
+    tool = SearchForPatternTool(agent)
+
+    from serena.util.text_utils import MatchedConsecutiveLines
+
+    def fail_full_render(self, *args, **kwargs):
+        raise AssertionError("oversized repeated line was materialised once per match")
+
+    monkeypatch.setattr(MatchedConsecutiveLines, "to_display_string", fail_full_render)
+
+    result = tool.apply(
+        substring_pattern="MATCHME",
+        relative_path="minified.txt",
+        restrict_search_to_code_files=False,
+        max_answer_chars=2000,
+    )
+
+    assert "The answer is too long" in result
+    assert "Match counts per file" in result or "Found 20000 matches" in result
+    assert len(result) <= 2000

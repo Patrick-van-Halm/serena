@@ -111,32 +111,45 @@ class PatternMatchesRenderer(Renderer[PatternMatches]):
     Renders matches as a mapping from file paths to matched line blocks (with context), falling back to progressively
     shorter representations (first lines, truncated first lines, line numbers, per-file counts, a summary) if the
     length limit is exceeded.
+
+    The renderer deliberately estimates candidate size before materialising it. A minified/generated file can have
+    a single 100k+ character line with tens of thousands of regex matches on that line; eagerly formatting the whole
+    line once per match can otherwise create many gigabytes of temporary strings before the output limit is applied.
     """
 
     _TEXT_TRUNCATE = 60
 
+    @staticmethod
+    def _full_result_lower_bound(matches_by_file: dict[str, list[MatchedConsecutiveLines]]) -> int:
+        # Each displayed block contains every line_content at least once. JSON/prefix escaping only makes it larger.
+        return sum(len(line.line_content) for matches in matches_by_file.values() for match in matches for line in match.lines)
+
+    def _overflow_prefix(self, lower_bound: int) -> str:
+        return (
+            f"The answer is too long (at least {lower_bound} characters). "
+            "You can adjust your query or raise the max_answer_chars parameter."
+        )
+
     def render(self, obj: PatternMatches) -> str:
         matches_by_file = obj.matches_by_file_()
-        file_to_matches = {path: [m.to_display_string() for m in matches] for path, matches in matches_by_file.items()}
+        max_answer_chars = self._get_max_answer_chars()
+        full_lower_bound = self._full_result_lower_bound(matches_by_file)
 
-        # capture lightweight match data for shortening before serialization
-        match_lines_by_file = {
-            path: [{"line": m.matched_lines[0].line_number, "text": m.matched_lines[0].line_content.strip()} for m in matches]
-            for path, matches in matches_by_file.items()
-        }
+        def first_line_text(match: MatchedConsecutiveLines, truncate: bool) -> str:
+            # Slice before stripping when truncating, so a pathological 150k-character line is
+            # never copied in full merely to produce a 60-character snippet.
+            text = match.matched_lines[0].line_content
+            if truncate and len(text) > self._TEXT_TRUNCATE:
+                return text[: self._TEXT_TRUNCATE].strip() + "..."
+            return text.strip()
 
-        # shortened result closures, from least to most aggressive shortening
         def render_first_lines(truncate: bool) -> str:
-            """Render each match's first line, either in full or truncated to a fixed length."""
-
-            def entry_text(text: str) -> str:
-                if truncate and len(text) > self._TEXT_TRUNCATE:
-                    return text[: self._TEXT_TRUNCATE] + "..."
-                return text
-
             compact = {
-                path: [{"line": m["line"], "text": entry_text(str(m["text"]))} for m in lines]
-                for path, lines in match_lines_by_file.items()
+                path: [
+                    {"line": match.matched_lines[0].line_number, "text": first_line_text(match, truncate)}
+                    for match in matches
+                ]
+                for path, matches in matches_by_file.items()
             }
             if truncate:
                 header = (
@@ -147,33 +160,61 @@ class PatternMatchesRenderer(Renderer[PatternMatches]):
                 header = "Matched lines per file; use read_file with the line numbers for surrounding context:"
             return f"{header}\n{self._to_json(compact)}"
 
-        def make_first_lines_full() -> str:
-            return render_first_lines(truncate=False)
-
-        def make_first_lines_truncated() -> str:
-            return render_first_lines(truncate=True)
-
         def make_line_numbers_only() -> str:
-            numbers = {path: [m["line"] for m in lines] for path, lines in match_lines_by_file.items()}
+            numbers = {path: [match.matched_lines[0].line_number for match in matches] for path, matches in matches_by_file.items()}
             return f"Match lines per file:\n{self._to_json(numbers)}"
 
         def make_per_file_counts() -> str:
-            counts = {path: len(lines) for path, lines in match_lines_by_file.items()}
+            counts = {path: len(matches) for path, matches in matches_by_file.items()}
             return f"Match counts per file:\n{self._to_json(counts)}"
 
         def make_summary() -> str:
-            return f"Found {len(obj)} matches in {len(match_lines_by_file)} files."
+            return f"Found {len(obj)} matches in {len(matches_by_file)} files."
 
-        return self._limit_length(
-            self._to_json(file_to_matches),
-            shortened_result_factories=[
-                make_first_lines_full,
-                make_first_lines_truncated,
-                make_line_numbers_only,
-                make_per_file_counts,
-                make_summary,
-            ],
+        # Build shortening candidates only when their raw payload can plausibly fit. This avoids
+        # allocating an intermediate that is known in advance to be much larger than the answer.
+        shortened_factories: list[Callable[[], str]] = []
+        first_lines_lower_bound = sum(
+            len(match.matched_lines[0].line_content)
+            for matches in matches_by_file.values()
+            for match in matches
         )
+        if first_lines_lower_bound <= max_answer_chars:
+            shortened_factories.append(lambda: render_first_lines(truncate=False))
+
+        # Truncated snippets have bounded per-match text, but for hundreds of thousands of
+        # matches even those cannot fit. Skip directly to line numbers/counts in that case.
+        truncated_estimate = sum(
+            min(len(match.matched_lines[0].line_content), self._TEXT_TRUNCATE) + 40
+            for matches in matches_by_file.values()
+            for match in matches
+        )
+        if truncated_estimate <= max_answer_chars:
+            shortened_factories.append(lambda: render_first_lines(truncate=True))
+
+        line_number_estimate = sum(
+            len(str(match.matched_lines[0].line_number)) + 2
+            for matches in matches_by_file.values()
+            for match in matches
+        )
+        if line_number_estimate <= max_answer_chars:
+            shortened_factories.append(make_line_numbers_only)
+
+        shortened_factories.extend([make_per_file_counts, make_summary])
+
+        if full_lower_bound > max_answer_chars:
+            prefix = self._overflow_prefix(full_lower_bound)
+            for make_shorter in shortened_factories:
+                shortened = make_shorter()
+                candidate = f"{prefix}\n{shortened}"
+                if len(candidate) <= max_answer_chars:
+                    return candidate
+            return prefix
+
+        # The lower bound fits, so materialising the complete result is memory-bounded by the
+        # caller's requested answer size rather than by match_count * giant_line_length.
+        file_to_matches = {path: [m.to_display_string() for m in matches] for path, matches in matches_by_file.items()}
+        return self._limit_length(self._to_json(file_to_matches), shortened_result_factories=shortened_factories)
 
 
 class FsApi(FacadeApi):

@@ -376,11 +376,19 @@ def search_files(
             log.debug(f"Error processing {relative_path}: {e}")
             return {"path": relative_path, "results": [], "error": str(e)}
 
-    # Execute in parallel using joblib
-    results = Parallel(
-        n_jobs=-1,
-        backend="threading",
-    )(delayed(process_single_file)(file_proxy) for file_proxy in file_collection)
+    # Avoid a thread pool for the common single-file search. For multi-file searches, bound
+    # concurrency so several very large files are not all materialised simultaneously.
+    num_files = len(file_collection)
+    if num_files == 0:
+        results = []
+    elif num_files == 1:
+        results = [process_single_file(next(iter(file_collection)))]
+    else:
+        results = Parallel(
+            n_jobs=min(4, num_files),
+            backend="threading",
+            batch_size=1,
+        )(delayed(process_single_file)(file_proxy) for file_proxy in file_collection)
 
     # Collect results and errors
     matches = []
