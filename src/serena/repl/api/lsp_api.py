@@ -191,10 +191,14 @@ class LspSymbolCollectionRenderer(Renderer[LspSymbolCollection]):
         def create_short_result_relative_path_to_name_paths() -> str:
             return f"Shortened result:\n{TextOutputUtils.to_json(obj.relative_path_to_name_paths_())}"
 
-        # If the mandatory string values alone exceed the answer budget, the full
-        # nested dictionaries/children/bodies cannot fit. Skip their construction.
+        def create_symbol_counts_by_file() -> str:
+            counts = Counter(symbol.location.relative_path or "unknown" for symbol in obj.symbols)
+            return f"Shortened result; symbol counts per file:\n{self._to_json(counts)}"
+
+        # If mandatory values already exceed the budget, even the full name-path fallback
+        # cannot fit. Do not allocate every name path merely to reject it afterward.
         if self._minimum_value_chars(obj) > self._get_max_answer_chars():
-            return self._limit_length(create_short_result_relative_path_to_name_paths())
+            return self._limit_length(create_symbol_counts_by_file())
 
         symbol_dicts = self.symbol_dicts_(obj.symbols, obj.info_by_symbol_)
         # symbol_dicts is disposable here; let the grouper consume it in place instead
