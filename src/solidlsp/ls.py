@@ -529,8 +529,9 @@ class SolidLanguageServer(ABC):
         """maps paths to (file_signature, file_content_hash, raw_root_symbols)"""
         self._raw_document_symbols_cache_is_modified: bool = False
         self._raw_document_symbols_cache_loaded = False
-        # Raw symbols are only a fallback for rebuilding an empty processed cache.
-        # Do not eagerly deserialize that second complete object graph.
+        # Kept only for compatibility with cache/migration helpers. Normal runtime does
+        # not load the monolithic raw cache; the processed cache is the sole resident
+        # project symbol cache.
         # * high-level document symbols cache
         self._document_symbols_cache: dict[str, tuple[FileSignature, str, DocumentSymbols]] = {}
         """maps paths to (file_signature, file_content_hash, document_symbols)"""
@@ -1821,53 +1822,17 @@ class SolidLanguageServer(ABC):
         self, relative_file_path: str, file_data: LSPFileBuffer | None
     ) -> list[SymbolInformation] | list[DocumentSymbol] | None:
         """
-        Gets the raw document symbols for the given file, either from the cache or by querying the language server.
+        Retrieve raw document symbols directly from the language server.
 
-        :param relative_file_path: the relative path of the file for which to retrieve the raw document symbols.
-        :param file_data: the file data buffer, if already opened. If None, the file will be opened in this method.
-        :return: the list of root symbols in the file
+        Serena intentionally does not deserialize the legacy monolithic raw-symbol cache
+        during normal operation. Keeping that complete raw tree resident beside the
+        processed document-symbol cache can nearly double project memory. The processed
+        cache remains the persistent warm cache; a processed-cache miss pays one LSP
+        documentSymbol request and immediately converts the result without retaining a
+        second raw representation.
         """
-
-        if not self._raw_document_symbols_cache_loaded:
-            self._load_raw_document_symbols_cache()
-
-        def get_cached_raw_document_symbols(cache_key: str, fd: LSPFileBuffer) -> list[SymbolInformation] | list[DocumentSymbol] | None:
-            file_hash_and_result = self._raw_document_symbols_cache.get(cache_key)
-            if file_hash_and_result is None:
-                log.debug("No cache hit for raw document symbols in %s", relative_file_path)
-                log.debug("perf: raw_document_symbols_cache MISS path=%s", relative_file_path)
-                return None
-
-            cached_signature, file_hash, result = file_hash_and_result
-            current_signature = fd.file_signature
-            if cached_signature == current_signature:
-                log.debug("Returning cached raw document symbols for %s by file signature", relative_file_path)
-                log.debug("perf: raw_document_symbols_cache HIT path=%s", relative_file_path)
-                return result
-
-            if file_hash == fd.content_hash:
-                # Treat the raw cache as a read-only rebuild fallback. The processed cache
-                # gets the fresh signature; retaining a second updated tree is unnecessary.
-                log.debug("Returning cached raw document symbols for %s after hash verification", relative_file_path)
-                return result
-
-            log.debug("Document content for %s has changed (raw symbol cache is not up-to-date)", relative_file_path)
-            log.debug("perf: raw_document_symbols_cache STALE path=%s", relative_file_path)
-            return None
-
         with self._open_file_context(relative_file_path, file_buffer=file_data, open_in_ls=False) as fd:
-            # check for cached result
-            cache_key = relative_file_path
-            response = get_cached_raw_document_symbols(cache_key, fd)
-            if response is not None:
-                return response
-
-            # no cached result, query language server
-            response = self._request_raw_document_symbols(relative_file_path, file_data=fd)
-
-            # Fresh raw responses are immediately converted into the processed cache.
-            # Do not retain a duplicate raw tree in this process.
-            return response
+            return self._request_raw_document_symbols(relative_file_path, file_data=fd)
 
     def _request_raw_document_symbols(
         self, relative_file_path: str, file_data: LSPFileBuffer | None
@@ -2064,10 +2029,6 @@ class SolidLanguageServer(ABC):
         unified_root_symbols = convert_symbols_with_common_parent(root_symbols, None)
         document_symbols = DocumentSymbols(unified_root_symbols)
 
-        # Consume fallback raw entries after conversion. Their on-disk copy remains
-        # available for a future processed-cache migration, but this process retains
-        # only the processed tree.
-        self._raw_document_symbols_cache.pop(relative_file_path, None)
         return document_symbols
 
     def request_full_symbol_tree(self, within_relative_path: str | None = None) -> list[ls_types.UnifiedSymbolInformation]:
