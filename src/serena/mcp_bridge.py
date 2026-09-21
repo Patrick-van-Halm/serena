@@ -7,8 +7,8 @@ import secrets
 import shutil
 import subprocess
 import sys
-import time
 import threading
+import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
@@ -328,9 +328,20 @@ class SerenaMCPBridge:
                     session_id=self.session_id,
                 )
             except Exception as e:
-                # A transient daemon restart should not kill the stdio bridge. The next
-                # tool call will surface a concrete connection error if it persists.
-                log.debug("Shared MCP bridge heartbeat failed: %s", e)
+                # Re-establish the daemon/runtime proactively, but never retry an in-flight
+                # tool call: retrying an edit after an ambiguous network failure could apply
+                # a destructive operation twice.
+                log.debug("Shared MCP bridge heartbeat failed; reconnecting: %s", e)
+                try:
+                    client = ensure_shared_daemon(SerenaConfig.from_config_file())
+                    client.get_mcp_runtime_info(
+                        self.project_root,
+                        self.context.name,
+                        session_id=self.session_id,
+                    )
+                    self.client = client
+                except Exception as reconnect_error:
+                    log.debug("Shared MCP bridge reconnect failed: %s", reconnect_error)
 
     def run(self) -> None:
         try:

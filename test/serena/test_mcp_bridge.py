@@ -2,7 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from serena.config.context_mode import SerenaAgentContext
-from serena.mcp_bridge import SerenaMCPBridge, _daemon_command
+from serena.mcp_bridge import BridgeFastMCPTool, SerenaMCPBridge, _BridgeAgent, _daemon_command
 from serena.tools import ToolRegistry
 
 
@@ -50,3 +50,23 @@ def test_proxy_tool_preserves_original_tool_name_and_schema_source() -> None:
     assert proxy.get_apply_fn_metadata_from_cls().arg_model.model_json_schema()["properties"].keys() == (
         original.get_apply_fn_metadata_from_cls().arg_model.model_json_schema()["properties"].keys()
     )
+
+
+
+def test_bridge_fast_mcp_tool_preserves_search_schema() -> None:
+    context = SerenaAgentContext.from_name("codex")
+    original = ToolRegistry().get_tool_class_by_name("search_for_pattern")
+
+    bridge = SerenaMCPBridge.__new__(SerenaMCPBridge)
+    bridge.project_root = "/repo"
+    bridge.context = context
+    bridge.session_id = "chat-1"
+    bridge.client = MagicMock(return_value="ok")
+
+    proxy_class = bridge._proxy_tool_class(original)
+    proxy = proxy_class(_BridgeAgent(context))
+    mcp_tool = BridgeFastMCPTool(proxy, openai_tool_compatible=True, structured_output=None)
+
+    assert mcp_tool.name == "search_for_pattern"
+    assert "substring_pattern" in mcp_tool.parameters["properties"]
+    assert "relative_path" in mcp_tool.parameters["properties"]
