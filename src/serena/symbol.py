@@ -1394,19 +1394,21 @@ class SymbolDictGrouper(Generic[TSymbolDict], ABC):
                 return new_item
         return item
 
-    def group(self, symbols: list[TSymbolDict]) -> GroupedSymbolDict | list:
+    def group(self, symbols: list[TSymbolDict], copy_input: bool = True) -> GroupedSymbolDict | list:
         """
         :param symbols: the symbols to group
+        :param copy_input: whether to preserve the input dictionaries. Renderers commonly
+            transfer ownership of a freshly-created list and can set this False to avoid
+            retaining both a full deep copy and the grouped tree at peak memory.
         :return: dictionary with the symbols grouped as defined at construction if at least one key was used for grouping,
             otherwise the list of symbols (potentially transformed)
         """
-        # avoid side effects by working on a deep-copy
-        symbols_copy = copy.deepcopy(symbols)
+        working_symbols = copy.deepcopy(symbols) if copy_input else symbols
 
         if not self._is_enabled:
-            return symbols_copy
+            return working_symbols
 
-        return self._group_by(symbols_copy, self._group_keys, self._group_children_keys, is_children=False)
+        return self._group_by(working_symbols, self._group_keys, self._group_children_keys, is_children=False)
 
     @contextmanager
     def disabled_context(self) -> Iterator[None]:

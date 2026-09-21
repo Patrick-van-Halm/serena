@@ -158,14 +158,33 @@ class LspSymbolCollectionRenderer(Renderer[LspSymbolCollection]):
                 s_dict["info"] = symbol_info
         return symbol_dicts
 
-    def _group(self, symbol_dicts: list[LanguageServerSymbol.OutputDict]) -> Any:
-        return self._grouper.group(symbol_dicts) if self._grouper is not None else symbol_dicts
+    def _group(self, symbol_dicts: list[LanguageServerSymbol.OutputDict], copy_input: bool = True) -> Any:
+        return self._grouper.group(symbol_dicts, copy_input=copy_input) if self._grouper is not None else symbol_dicts
+
+    def _minimum_value_chars(self, obj: LspSymbolCollection) -> int:
+        """Cheap lower bound using values that must survive grouping."""
+        p = self._output_params
+        total = 0
+        if p.name_path:
+            total += sum(len(symbol.get_name_path()) for symbol in obj.symbols)
+        elif p.name:
+            total += sum(len(symbol.name) for symbol in obj.symbols)
+        total += sum(len(info) for info in obj.info_by_symbol_.values())
+        return total
 
     def render(self, obj: LspSymbolCollection) -> str:
         def create_short_result_relative_path_to_name_paths() -> str:
             return f"Shortened result:\n{TextOutputUtils.to_json(obj.relative_path_to_name_paths_())}"
 
-        result = self._to_json(self._group(self.symbol_dicts_(obj.symbols, obj.info_by_symbol_)))
+        # If the mandatory string values alone exceed the answer budget, the full
+        # nested dictionaries/children/bodies cannot fit. Skip their construction.
+        if self._minimum_value_chars(obj) > self._get_max_answer_chars():
+            return self._limit_length(create_short_result_relative_path_to_name_paths())
+
+        symbol_dicts = self.symbol_dicts_(obj.symbols, obj.info_by_symbol_)
+        # symbol_dicts is disposable here; let the grouper consume it in place instead
+        # of deepcopying the complete nested tree.
+        result = self._to_json(self._group(symbol_dicts, copy_input=False))
         return self._limit_length(result, shortened_result_factories=[create_short_result_relative_path_to_name_paths])
 
 
@@ -191,24 +210,40 @@ class LspSymbolsOverviewRenderer(LspSymbolCollectionRenderer):
     """
 
     def render(self, obj: LspSymbolCollection) -> str:
-        symbol_dicts = self.symbol_dicts_(obj.symbols, obj.info_by_symbol_)
-        result = self._to_json(self._group(symbol_dicts))
-
         def make_kind_counts() -> str:
-            kind_names = [d.get("kind", "unknown") for d in symbol_dicts]
-            return f"Symbol counts by kind:\n{self._to_json(Counter(kind_names))}"
+            return f"Symbol counts by kind:\n{self._to_json(Counter(symbol.symbol_kind_name for symbol in obj.symbols))}"
+
+        if self._minimum_value_chars(obj) > self._get_max_answer_chars():
+            return self._limit_length(make_kind_counts())
 
         shortened_results: list[Callable[[], str]] = [make_kind_counts]
         if self._output_params.depth > 0:
 
             def make_depth_0_result() -> str:
-                depth_0_dicts = [d.copy() for d in symbol_dicts]
-                for d in depth_0_dicts:
-                    d.pop("children", None)
-                return "Depth 0 overview:\n" + self._to_json(self._group(depth_0_dicts))
+                p = self._output_params
+                depth_0_dicts = [
+                    symbol.to_dict(
+                        kind=p.kind,
+                        name_path=p.name_path,
+                        name=p.name,
+                        location=p.location,
+                        relative_path=p.relative_path,
+                        body_location=p.body_location,
+                        depth=0,
+                        body=p.include_body,
+                        children_body=False,
+                        children_name=p.children_name,
+                        children_name_path=p.children_name_path,
+                        child_inclusion_predicate=p.child_inclusion_predicate,
+                    )
+                    for symbol in obj.symbols
+                ]
+                return "Depth 0 overview:\n" + self._to_json(self._group(depth_0_dicts, copy_input=False))
 
             shortened_results.insert(0, make_depth_0_result)
 
+        symbol_dicts = self.symbol_dicts_(obj.symbols, obj.info_by_symbol_)
+        result = self._to_json(self._group(symbol_dicts, copy_input=False))
         return self._limit_length(result, shortened_result_factories=shortened_results)
 
 
@@ -265,7 +300,7 @@ class LspReferenceCollectionRenderer(Renderer[LspReferenceCollection]):
     ) -> list[str | None]:
         """Load surrounding source only while it can plausibly fit in the answer budget."""
         summaries = [self._reference_summary(ref) for ref in references]
-        metadata_size = len(self._to_json(self._grouper.group([dict(summary) for summary in summaries])))
+        metadata_size = len(self._to_json(self._grouper.group([dict(summary) for summary in summaries], copy_input=False)))
         remaining = self._get_max_answer_chars() - metadata_size
         if remaining <= 0:
             return [None] * len(references)
@@ -294,11 +329,11 @@ class LspReferenceCollectionRenderer(Renderer[LspReferenceCollection]):
             reference_dicts.append(ref_dict)
             ref_summaries.append(self._reference_summary(ref))
 
-        result = self._to_json(self._grouper.group(reference_dicts))
+        result = self._to_json(self._grouper.group(reference_dicts, copy_input=False))
 
         # shortened result closures, from least to most aggressive shortening
         def make_refs_without_context() -> str:
-            return f"References without surrounding lines:\n{self._to_json(self._grouper.group([dict(s) for s in ref_summaries]))}"
+            return f"References without surrounding lines:\n{self._to_json(self._grouper.group([dict(s) for s in ref_summaries], copy_input=False))}"
 
         def make_per_file_counts() -> str:
             counts = Counter(str(r["relative_path"]) for r in ref_summaries)
