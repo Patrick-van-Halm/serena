@@ -314,6 +314,10 @@ class ProjectPromptProvisionStatus:
     def _get_session_status(self, session_id: str) -> SessionStatus:
         return self._session_status_dict[session_id]
 
+    def remove_session(self, session_id: str) -> None:
+        """Release per-conversation prompt bookkeeping."""
+        self._session_status_dict.pop(session_id, None)
+
     def is_mode_prompt_already_provided(self, mode_name: str, session_id: str) -> bool:
         """
         :param mode_name: the mode name
@@ -1173,7 +1177,8 @@ class SerenaAgent:
         return self._session_registry.create_session()
 
     def close_session(self, session_id: str) -> bool:
-        """Release conversation-scoped state, especially persistent REPL variables."""
+        """Release conversation-scoped REPL and prompt state."""
+        self._project_prompt_status.remove_session(session_id)
         return self._session_registry.remove_session(session_id)
 
     def get_session(self, session_id: str) -> SerenaSession:
@@ -1220,8 +1225,10 @@ class SerenaAgent:
         elif self._project_activation_error:
             system_prompt += f"\n\nNo project is active ({self._project_activation_error})."
 
-        # establish a Serena session and state its id, which the LLM must pass to tools which require it
-        serena_session = self.create_session()
+        # Establish a Serena session and state its id. When a concrete MCP/bridge
+        # conversation id was supplied, reuse it instead of allocating a second random
+        # session that the bridge cannot release on disconnect.
+        serena_session = self.create_session() if session_id == "global" else self.get_session(session_id)
         system_prompt += "\n\n" + self._format_prompt_tag(
             f"Your Serena session id is `{serena_session.session_id}`. Pass it as the `session` parameter to tools which require it.",
             tag="session",

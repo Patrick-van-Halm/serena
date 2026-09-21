@@ -22,3 +22,23 @@ def test_lru_eviction_disposes_namespace() -> None:
     registry.get_session("second")
 
     assert first.repl_namespace == {}
+
+
+
+def test_explicit_system_prompt_session_is_reused_and_released() -> None:
+    from unittest.mock import MagicMock
+
+    from serena.agent import SerenaAgent
+
+    agent = SerenaAgent.__new__(SerenaAgent)
+    agent._session_registry = SessionRegistry()
+    agent._project_prompt_status = MagicMock()
+
+    # Exercise the cleanup wrapper directly; create_system_prompt itself has substantial
+    # prompt dependencies and is covered elsewhere.
+    session = agent.get_session("bridge-chat")
+    session.repl_namespace["large"] = bytearray(1024)
+
+    assert agent.close_session("bridge-chat") is True
+    agent._project_prompt_status.remove_session.assert_called_once_with("bridge-chat")
+    assert session.repl_namespace == {}

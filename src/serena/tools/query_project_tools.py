@@ -4,7 +4,6 @@ import json
 
 from serena.config.serena_config import LanguageBackend
 from serena.jetbrains.jetbrains_plugin_client import JetBrainsPluginClientManager
-from serena.project_server import ProjectServerClient
 from serena.tools import Tool, ToolMarkerDoesNotRequireActiveProject, ToolMarkerOptional
 
 
@@ -57,6 +56,10 @@ class QueryProjectTool(Tool, ToolMarkerOptional, ToolMarkerDoesNotRequireActiveP
         tool = self.agent.get_tool_by_name(tool_name)
         assert tool.is_readonly(), f"Tool {tool_name} is not read-only and cannot be executed in another project."
         if self._is_project_server_required(tool):
+            # Keep Flask/the project-server implementation out of the normal Serena
+            # import graph; external-project RPC is an uncommon on-demand path.
+            from serena.project_server import ProjectServerClient
+
             client = ProjectServerClient(self.agent.serena_config)
             return client.query_project(project_name, tool_name, tool_params_json)
         else:
