@@ -248,25 +248,24 @@ class SymbolBody(ToStringMixin):
     """
     Source-free cached representation of a symbol body.
 
-    The processed symbol cache retains only a shared path/encoding descriptor plus the
-    four LSP range integers. Source text is read only when get_text is requested and is
-    not retained afterward.
+    The range dictionary already exists in every processed symbol location, so this
+    proxy stores only two references: the shared source descriptor and that existing
+    range object. Source text is read only on demand and is not retained afterward.
     """
 
-    __slots__ = ("_source", "_start_line", "_start_col", "_end_line", "_end_col")
+    __slots__ = ("_source", "_range")
 
-    def __init__(self, source: _SymbolBodySource, start_line: int, start_col: int, end_line: int, end_col: int) -> None:
+    def __init__(self, source: _SymbolBodySource, range_info: ls_types.Range) -> None:
         self._source = source
-        self._start_line = start_line
-        self._start_col = start_col
-        self._end_line = end_line
-        self._end_col = end_col
+        self._range = range_info
 
     def _tostring_excludes(self) -> list[str]:
-        return ["_source"]
+        return ["_source", "_range"]
 
     def get_text(self) -> str:
-        return self._source.read_range(self._start_line, self._start_col, self._end_line, self._end_col)
+        start = self._range["start"]
+        end = self._range["end"]
+        return self._source.read_range(start["line"], start["character"], end["line"], end["character"])
 
 
 class SymbolBodyFactory:
@@ -283,11 +282,7 @@ class SymbolBodyFactory:
             return existing_body
 
         assert "location" in symbol
-        start_line = symbol["location"]["range"]["start"]["line"]
-        end_line = symbol["location"]["range"]["end"]["line"]
-        start_col = symbol["location"]["range"]["start"]["character"]
-        end_col = symbol["location"]["range"]["end"]["character"]
-        return SymbolBody(self._source, start_line, start_col, end_line, end_col)
+        return SymbolBody(self._source, symbol["location"]["range"])
 
 
 class DocumentSymbols:
@@ -331,7 +326,7 @@ class SolidLanguageServer(ABC):
     """
     RAW_DOCUMENT_SYMBOL_CACHE_FILENAME = "raw_document_symbols.pkl"
     RAW_DOCUMENT_SYMBOL_CACHE_FILENAME_LEGACY_FALLBACK = "document_symbols_cache_v23-06-25.pkl"
-    DOCUMENT_SYMBOL_CACHE_VERSION = 6
+    DOCUMENT_SYMBOL_CACHE_VERSION = 7
     """
     defines the version of the high-level document symbol format.
     This should be incremented whenever there is a change in the way document symbols are stored.

@@ -7,14 +7,15 @@ These tests focus on the following methods:
 """
 
 import os
+import pickle
 
 import pytest
 
 from serena.symbol import LanguageServerSymbol
 from serena.util.text_utils import find_text_coordinates
 from solidlsp import SolidLanguageServer
-from solidlsp.ls_utils import FileUtils
 from solidlsp.ls import DocumentSymbols, SymbolBodyFactory
+from solidlsp.ls_utils import FileUtils
 from solidlsp.ls_types import SymbolKind
 from test.solidlsp.conftest import PYTHON_BACKEND_LANGUAGES
 
@@ -83,6 +84,27 @@ def test_symbol_body_preserves_trailing_logical_line_range(tmp_path, content: st
         }
     }
     assert SymbolBodyFactory(Buffer()).create_symbol_body(symbol).get_text() == "alpha\n"
+
+
+def test_source_free_symbol_body_remains_pickleable(tmp_path) -> None:
+    source = tmp_path / "sample.py"
+    source.write_text("abcdef\n", encoding="utf-8")
+
+    class Buffer:
+        abs_path = source
+        encoding = "utf-8"
+
+    symbol = {
+        "location": {
+            "range": {
+                "start": {"line": 0, "character": 1},
+                "end": {"line": 0, "character": 4},
+            }
+        }
+    }
+    body = SymbolBodyFactory(Buffer()).create_symbol_body(symbol)
+    restored = pickle.loads(pickle.dumps(body))
+    assert restored.get_text() == "bcd"
 
 
 def test_document_symbols_does_not_retain_flattened_view() -> None:
