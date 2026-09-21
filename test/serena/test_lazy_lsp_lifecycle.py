@@ -96,8 +96,6 @@ def test_agent_eager_lsp_initialization_remains_available() -> None:
 
 
 def test_symbolic_tool_holds_language_server_activity_lease() -> None:
-    from types import SimpleNamespace
-
     from serena.tools.tools_base import Tool, ToolMarkerSymbolicRead
 
     project = MagicMock()

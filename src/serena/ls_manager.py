@@ -273,7 +273,10 @@ class LanguageServerManager:
         :param save_cache: whether to save the cache before stopping
         :param timeout: timeout for shutdown of each language server
         """
-        for ls in self.iter_language_servers():
+        # Shutdown must not pass through iter_language_servers(), which restarts
+        # non-running servers as a recovery mechanism. Idle teardown should never
+        # resurrect a dead multi-GB LSP merely to stop it again.
+        for ls in self._language_servers.values():
             self._stop_language_server(ls, save_cache=save_cache, timeout=timeout)
 
     CACHE_SAVE_MIN_INTERVAL_SECONDS = 5.0
