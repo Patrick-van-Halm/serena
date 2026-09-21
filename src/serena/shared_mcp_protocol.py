@@ -13,8 +13,12 @@ SHARED_MCP_PROTOCOL_VERSION = 2
 # different memory/correctness behaviour.
 _RUNTIME_FILES = (
     "serena/project_server.py",
+    "serena/config/serena_config.py",
+    "serena/project.py",
     "serena/agent.py",
     "serena/ls_manager.py",
+    "serena/tools/tools_base.py",
+    "serena/repl/facade.py",
     "serena/session.py",
     "serena/task_executor.py",
     "solidlsp/ls.py",

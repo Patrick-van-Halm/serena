@@ -414,6 +414,16 @@ class FacadeMethod:
             external_project_execution.check_call_permission(self)
             if external_project_execution.is_called_remotely(self):
                 return external_project_execution.call_remotely(self.facade_name, self.name, args, kwargs)
+
+        # REPL calls bypass Tool.apply_ex, so lsp.* methods need the same activity lease.
+        # restart_language_server force-recreates the manager itself and therefore bypasses it.
+        if self.facade_name == "lsp" and self.name != "restart_language_server":
+            api = getattr(self._implementation, "__self__", None)
+            agent = getattr(api, "_agent", None)
+            if agent is not None and agent.get_language_backend().is_lsp():
+                with agent.get_active_project_or_raise().language_server_activity():
+                    return self._implementation(*args, **kwargs)
+
         return self._implementation(*args, **kwargs)
 
     def get_implementation_(self) -> Callable[..., Any]:

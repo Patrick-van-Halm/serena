@@ -385,25 +385,30 @@ class Tool(Component):
                 if self._is_session_aware:
                     apply_kwargs["session_id"] = session_id
 
-                # apply the actual tool
-                try:
-                    result = apply_fn(**apply_kwargs)
-                except SolidLSPException as e:
-                    if e.is_language_server_terminated():
-                        affected_language = e.get_affected_language()
-                        if affected_language is not None:
-                            log.error(
-                                f"Language server terminated while executing tool ({e}). Restarting the language server and retrying ..."
-                            )
-                            self.agent.get_language_server_manager_or_raise().restart_language_server(affected_language)
-                            result = apply_fn(**apply_kwargs)
-                        else:
+                def execute_apply() -> str:
+                    try:
+                        return apply_fn(**apply_kwargs)
+                    except SolidLSPException as e:
+                        if e.is_language_server_terminated():
+                            affected_language = e.get_affected_language()
+                            if affected_language is not None:
+                                log.error(
+                                    f"Language server terminated while executing tool ({e}). Restarting the language server and retrying ..."
+                                )
+                                self.agent.get_language_server_manager_or_raise().restart_language_server(affected_language)
+                                return apply_fn(**apply_kwargs)
                             log.error(
                                 f"Language server terminated while executing tool ({e}), but affected language is unknown. Not retrying."
                             )
-                            raise
-                    else:
                         raise
+
+                # Keep the LSP alive for the complete symbolic operation. Non-symbolic
+                # file/search/shell/test calls neither start nor renew the LSP lifecycle.
+                if self.is_symbolic() and self.agent.get_language_backend().is_lsp():
+                    with self.agent.get_active_project_or_raise().language_server_activity():
+                        result = execute_apply()
+                else:
+                    result = execute_apply()
 
                 # record tool usage
                 self.agent.record_tool_usage(apply_kwargs, result, self)

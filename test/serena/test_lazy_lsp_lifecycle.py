@@ -92,3 +92,87 @@ def test_agent_eager_lsp_initialization_remains_available() -> None:
     agent._init_active_project_language_backend()
 
     agent.reset_language_server_manager.assert_called_once_with()
+
+
+
+def test_symbolic_tool_holds_language_server_activity_lease() -> None:
+    from types import SimpleNamespace
+
+    from serena.tools.tools_base import Tool, ToolMarkerSymbolicRead
+
+    project = MagicMock()
+    lease_entered = []
+
+    class Lease:
+        def __enter__(self):
+            lease_entered.append(True)
+            return MagicMock()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            lease_entered.append(False)
+
+    project.language_server_activity.return_value = Lease()
+
+    agent = MagicMock()
+    agent.serena_config.tool_timeout = 1.0
+    agent.get_language_backend.return_value = LanguageBackend.LSP
+    agent.get_active_project.return_value = project
+    agent.get_active_project_or_raise.return_value = project
+    agent.get_active_tools.return_value.contains_tool_name.return_value = True
+
+    class ImmediateTask:
+        def __init__(self, fn):
+            self.fn = fn
+
+        def result(self, timeout=None):
+            return self.fn()
+
+    agent.issue_task.side_effect = lambda fn, **kwargs: ImmediateTask(fn)
+
+    class SymbolicTool(Tool, ToolMarkerSymbolicRead):
+        def apply(self) -> str:
+            assert lease_entered == [True]
+            return "OK"
+
+    tool = SymbolicTool(agent)
+    assert tool.apply_ex() == "OK"
+    assert lease_entered == [True, False]
+
+
+def test_repl_lsp_facade_holds_language_server_activity_lease() -> None:
+    from serena.repl.facade import Facade, FacadeMethod, FacadeMethodInfo
+
+    project = MagicMock()
+    lease_entered = []
+
+    class Lease:
+        def __enter__(self):
+            lease_entered.append(True)
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            lease_entered.append(False)
+
+    project.language_server_activity.return_value = Lease()
+
+    agent = MagicMock()
+    agent.get_language_backend.return_value = LanguageBackend.LSP
+    agent.get_active_project_or_raise.return_value = project
+
+    class Api:
+        def __init__(self):
+            self._agent = agent
+
+        def operation(self) -> str:
+            assert lease_entered == [True]
+            return "OK"
+
+    parent = Facade("lsp", "test")
+    method = FacadeMethod(
+        parent,
+        Api().operation,
+        FacadeMethodInfo(name="operation"),
+        enabled=True,
+    )
+
+    assert method() == "OK"
+    assert lease_entered == [True, False]
