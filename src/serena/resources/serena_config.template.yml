@@ -31,13 +31,12 @@ agent_interface: tools
 # remains unrestricted regardless of this setting.
 full_access_mode: false
 
-# Idle lifetime for the lightweight shared-daemon MCP bridge.
-# Some MCP clients start duplicate/probe stdio servers and keep their stdin open even
-# after the server is no longer being used. Bridges that never execute a Serena tool
-# are therefore reaped quickly; bridges that have been used get a longer idle window.
-# Set either value to 0 to disable that timeout.
-mcp_bridge_unused_idle_timeout_seconds: 120
-mcp_bridge_idle_timeout_seconds: 900
+# Deprecated compatibility settings. Bridges intentionally remain alive for as long
+# as the MCP client keeps their stdio connection open. Codex does not reliably respawn
+# a bridge that exits during an existing conversation, so idle memory reclamation is
+# handled by the shared daemon/LSP lifecycle instead of terminating the transport.
+mcp_bridge_unused_idle_timeout_seconds: 0
+mcp_bridge_idle_timeout_seconds: 0
 
 # LSP lifecycle management. With lazy start enabled, opening/activating a project does
 # not start its language server; the first symbolic operation does. Once started, the

@@ -30,8 +30,8 @@ def test_full_access_mode_defaults_to_false() -> None:
 
 def test_mcp_bridge_idle_timeout_defaults() -> None:
     config = SerenaConfig()
-    assert config.mcp_bridge_unused_idle_timeout_seconds == 120.0
-    assert config.mcp_bridge_idle_timeout_seconds == 900.0
+    assert config.mcp_bridge_unused_idle_timeout_seconds == 0.0
+    assert config.mcp_bridge_idle_timeout_seconds == 0.0
 
 
 def test_language_server_lifecycle_defaults() -> None:

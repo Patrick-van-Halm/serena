@@ -326,10 +326,6 @@ class SerenaMCPBridge:
         self.session_id = secrets.token_hex(8)
 
         config = SerenaConfig.from_config_file()
-        self._init_activity_tracking(
-            unused_idle_timeout_seconds=config.mcp_bridge_unused_idle_timeout_seconds,
-            idle_timeout_seconds=config.mcp_bridge_idle_timeout_seconds,
-        )
         self.client = ensure_shared_daemon(config)
         runtime_info = self.client.get_runtime_info(self.project_root, self.context.name, session_id=self.session_id)
         self._heartbeat_stop = threading.Event()
@@ -381,7 +377,6 @@ class SerenaMCPBridge:
             mcp_ctx: Context | None = None,
             **kwargs,
         ) -> str:
-            bridge._begin_tool_call()
             try:
                 return bridge.client.call_tool(
                     project_root=bridge.project_root,
@@ -395,8 +390,6 @@ class SerenaMCPBridge:
                 if catch_exceptions:
                     return error.get_error_message()
                 raise error from e
-            finally:
-                bridge._end_tool_call()
 
         return type(
             tool_class.__name__,
@@ -406,34 +399,6 @@ class SerenaMCPBridge:
                 "apply_ex": apply_ex,
             },
         )
-
-    def _init_activity_tracking(self, unused_idle_timeout_seconds: float, idle_timeout_seconds: float) -> None:
-        self._activity_lock = threading.Lock()
-        self._last_client_activity = time.monotonic()
-        self._has_seen_tool_call = False
-        self._active_tool_calls = 0
-        self._unused_idle_timeout_seconds = max(float(unused_idle_timeout_seconds), 0.0)
-        self._idle_timeout_seconds = max(float(idle_timeout_seconds), 0.0)
-
-    def _begin_tool_call(self) -> None:
-        with self._activity_lock:
-            self._has_seen_tool_call = True
-            self._active_tool_calls += 1
-            self._last_client_activity = time.monotonic()
-
-    def _end_tool_call(self) -> None:
-        with self._activity_lock:
-            self._active_tool_calls = max(self._active_tool_calls - 1, 0)
-            self._last_client_activity = time.monotonic()
-
-    def _is_idle_expired(self, now: float | None = None) -> bool:
-        if now is None:
-            now = time.monotonic()
-        with self._activity_lock:
-            if self._active_tool_calls > 0:
-                return False
-            timeout = self._idle_timeout_seconds if self._has_seen_tool_call else self._unused_idle_timeout_seconds
-            return timeout > 0 and now - self._last_client_activity >= timeout
 
     def _unregister_bridge(self) -> None:
         try:
@@ -445,24 +410,12 @@ class SerenaMCPBridge:
         except Exception as e:
             log.debug("Failed to unregister shared MCP bridge: %s", e)
 
-    def _exit_idle_bridge(self) -> None:
-        if self._shutdown_started.is_set():
-            return
-        self._shutdown_started.set()
-        self._heartbeat_stop.set()
-        log.info("Shared MCP bridge idle timeout reached for %s; exiting", self.project_root)
-        self._unregister_bridge()
-        # FastMCP's stdio reader may still be blocked because the client kept stdin open.
-        # This process is deliberately disposable, so terminate it after cleanly releasing
-        # daemon/session state. The uvx wrapper exits when its child exits.
-        os._exit(0)
-
     def _heartbeat_loop(self) -> None:
+        # Do not self-terminate on inactivity. Codex may keep an MCP stdio transport
+        # open for a conversation but does not reliably respawn a server that exits
+        # while that conversation is still alive. Heavy resources idle behind this
+        # lightweight bridge: project LSPs are stopped independently by the daemon.
         while not self._heartbeat_stop.wait(self.HEARTBEAT_INTERVAL_SECONDS):
-            if self._is_idle_expired():
-                self._exit_idle_bridge()
-                return
-
             try:
                 self.client.heartbeat_bridge(
                     project_root=self.project_root,

@@ -979,17 +979,16 @@ class SerenaConfig(SharedConfig, ModeSelectionDefinitionWithBaseModes):
     timeout for tool calls in seconds; if a tool takes longer than this, it is aborted and an error is returned.
     """
 
-    mcp_bridge_unused_idle_timeout_seconds: float = 120.0
+    mcp_bridge_unused_idle_timeout_seconds: float = 0.0
     """
-    Idle timeout for an MCP bridge which has not executed any Serena tool call yet.
-    This primarily cleans up duplicate/probe bridge processes created by MCP clients.
-    Set to 0 to disable this timeout.
+    Deprecated compatibility setting. MCP bridges no longer self-terminate on idle while
+    the client keeps the stdio connection open, because clients such as Codex may not
+    reconnect that conversation afterward.
     """
-    mcp_bridge_idle_timeout_seconds: float = 900.0
+    mcp_bridge_idle_timeout_seconds: float = 0.0
     """
-    Idle timeout for an MCP bridge after it has executed at least one Serena tool call.
-    When it expires, the lightweight bridge unregisters its shared-daemon session and exits;
-    the MCP client can start a new bridge when Serena is needed again. Set to 0 to disable.
+    Deprecated compatibility setting. Kept so existing Serena configuration files remain
+    loadable; bridge lifetime is now controlled by the MCP client's stdio connection.
     """
 
     language_server_lazy_start: bool = True
