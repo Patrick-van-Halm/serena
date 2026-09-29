@@ -243,6 +243,16 @@ class ProjectServer:
             return Response(pickle.dumps(result), mimetype="application/octet-stream")
 
     @staticmethod
+    def _assert_mcp_runtime_root(requested_root: str, active_root: str) -> str:
+        canonical_active_root = str(Path(active_root).expanduser().resolve())
+        if canonical_active_root != requested_root:
+            raise ValueError(
+                f"Shared MCP project routing mismatch: requested root {requested_root!r}, "
+                f"but the agent activated {canonical_active_root!r}"
+            )
+        return canonical_active_root
+
+    @staticmethod
     def _mcp_runtime_key(project_root: str, context: str) -> tuple[str, str]:
         root = Path(project_root).expanduser().resolve()
         if not root.is_dir():
@@ -281,9 +291,15 @@ class ProjectServer:
                 agent.on_shutdown()
                 raise ValueError(f"Failed to activate shared MCP project {key[0]!r}")
 
+            try:
+                active_root = self._assert_mcp_runtime_root(key[0], active_project.project_root)
+            except Exception:
+                agent.on_shutdown()
+                raise
+
             runtime = MCPProjectRuntime(
                 agent=agent,
-                project_root=active_project.project_root,
+                project_root=active_root,
                 context=context,
                 last_access=time.monotonic(),
             )

@@ -1,4 +1,6 @@
 import threading
+
+import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -9,6 +11,7 @@ from serena.mcp_bridge import (
     _BridgeAgent,
     _daemon_command,
     _terminate_stale_daemon,
+    _validate_runtime_project_root,
 )
 from serena.tools import ToolRegistry
 
@@ -105,3 +108,21 @@ def test_bridge_heartbeat_does_not_self_exit_when_idle() -> None:
         context="codex",
         session_id="chat-idle",
     )
+
+
+
+def test_bridge_runtime_root_validation_rejects_other_worktree(tmp_path) -> None:
+    requested = tmp_path / "worktree-a"
+    other = tmp_path / "worktree-b"
+    requested.mkdir()
+    other.mkdir()
+
+    with pytest.raises(ConnectionError, match="unexpected project"):
+        _validate_runtime_project_root(str(requested), str(other))
+
+
+def test_bridge_runtime_root_validation_accepts_same_worktree(tmp_path) -> None:
+    root = tmp_path / "worktree"
+    root.mkdir()
+
+    assert _validate_runtime_project_root(str(root), str(root)) == str(root.resolve())

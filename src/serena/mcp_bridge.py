@@ -280,6 +280,17 @@ def _terminate_stale_daemon(pid: int | None) -> None:
         psutil.wait_procs(alive, timeout=2.0)
 
 
+def _validate_runtime_project_root(requested_root: str, runtime_root: str) -> str:
+    canonical_requested = str(Path(requested_root).expanduser().resolve())
+    canonical_runtime = str(Path(runtime_root).expanduser().resolve())
+    if canonical_runtime != canonical_requested:
+        raise ConnectionError(
+            f"Shared Serena daemon routed bridge for {canonical_requested!r} "
+            f"to unexpected project {canonical_runtime!r}"
+        )
+    return canonical_runtime
+
+
 def ensure_shared_daemon(serena_config: SerenaConfig, startup_timeout: float = 30.0) -> SharedMCPDaemonClient:
     """Return the singleton daemon client, starting the daemon if necessary."""
     try:
@@ -328,6 +339,16 @@ class SerenaMCPBridge:
         config = SerenaConfig.from_config_file()
         self.client = ensure_shared_daemon(config)
         runtime_info = self.client.get_runtime_info(self.project_root, self.context.name, session_id=self.session_id)
+        try:
+            _validate_runtime_project_root(self.project_root, runtime_info.project_root)
+        except Exception:
+            self.client.close_bridge(
+                project_root=runtime_info.project_root,
+                context=self.context.name,
+                session_id=self.session_id,
+            )
+            raise
+
         self._heartbeat_stop = threading.Event()
         self._shutdown_started = threading.Event()
         self._heartbeat_thread = threading.Thread(

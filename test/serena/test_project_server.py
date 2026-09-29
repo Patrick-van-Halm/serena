@@ -425,3 +425,20 @@ def test_project_server_heartbeat_exposes_shared_runtime_identity(project_server
     assert isinstance(payload["shared_mcp_protocol_version"], int)
     assert isinstance(payload["shared_mcp_build_id"], str)
     assert payload["pid"] > 0
+
+
+
+def test_shared_mcp_runtime_root_rejects_wrong_worktree(tmp_path) -> None:
+    requested = str((tmp_path / "worktree-a").resolve())
+    active = str((tmp_path / "worktree-b").resolve())
+
+    with pytest.raises(ValueError, match="routing mismatch"):
+        ProjectServer._assert_mcp_runtime_root(requested, active)
+
+
+def test_shared_mcp_runtime_root_accepts_exact_worktree(tmp_path) -> None:
+    root = tmp_path / "worktree"
+    root.mkdir()
+    canonical = str(root.resolve())
+
+    assert ProjectServer._assert_mcp_runtime_root(canonical, canonical) == canonical
