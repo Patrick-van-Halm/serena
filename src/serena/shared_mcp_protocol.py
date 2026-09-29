@@ -6,7 +6,7 @@ import hashlib
 from functools import lru_cache
 from pathlib import Path
 
-SHARED_MCP_PROTOCOL_VERSION = 2
+SHARED_MCP_PROTOCOL_VERSION = 3
 
 # Files whose implementation materially affects a long-lived shared daemon runtime.
 # A bridge from a newer uvx archive must not silently reuse an older daemon that has

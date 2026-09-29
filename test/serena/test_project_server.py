@@ -271,7 +271,7 @@ def test_shared_mcp_runtime_info_reuses_project_agent(project_server: ProjectSer
     server._mcp_runtimes_lock = threading.Lock()
 
     agent = MagicMock()
-    project = MagicMock(project_root="/project")
+    project = MagicMock(project_root="/project", project_name="project")
     agent.get_active_project.return_value = project
     tool = MagicMock()
     tool.get_name.return_value = "find_symbol"
@@ -302,6 +302,7 @@ def test_shared_mcp_tool_call_forwards_bridge_session_id(project_server: Project
     tool.get_name.return_value = "serena_repl"
     tool.apply_ex.return_value = "ok"
     agent = MagicMock()
+    agent.get_active_project.return_value = MagicMock(project_root="/project", project_name="project")
     agent.get_exposed_tool_instances.return_value = [tool]
     agent.get_tool_by_name.return_value = tool
     runtime = MCPProjectRuntime(agent=agent, project_root="/project", context="codex", last_access=0.0)
