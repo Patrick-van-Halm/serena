@@ -51,3 +51,20 @@ def test_available_languages_exclude_project_languages():
     assert LanguageServerId.MARKDOWN.value not in available
     # ensure experimental languages remain available for selection
     assert LanguageServerId.ANSIBLE.value in available
+
+
+
+def test_registered_project_active_state_uses_root_not_name(tmp_path) -> None:
+    from serena.config.serena_config import ProjectConfig, RegisteredProject
+
+    first_root = tmp_path / "main"
+    second_root = tmp_path / "worktree"
+    first_root.mkdir()
+    second_root.mkdir()
+
+    first = RegisteredProject(str(first_root), ProjectConfig(project_name="same-repo", language_servers=[]))
+    second = RegisteredProject(str(second_root), ProjectConfig(project_name="same-repo", language_servers=[]))
+    active = SimpleNamespace(project_root=str(second_root.resolve()), project_name="same-repo")
+
+    assert SerenaDashboardAPI._registered_project_is_active(first, active) is False
+    assert SerenaDashboardAPI._registered_project_is_active(second, active) is True

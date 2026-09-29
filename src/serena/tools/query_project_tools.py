@@ -33,9 +33,9 @@ class ListQueryableProjectsTool(Tool, ToolMarkerOptional, ToolMarkerDoesNotRequi
         else:
             relevant_projects = registered_projects
 
-        # return project names and roots
-        result = {p.project_name: str(p.project_root) for p in relevant_projects}
-        return self._to_json(result)
+        # Duplicate worktrees may share project_name; use canonical root paths as
+        # selectors for ambiguous names so no entry is overwritten.
+        return self._to_json(self.agent.serena_config.get_project_selector_map(relevant_projects))
 
 
 class QueryProjectTool(Tool, ToolMarkerOptional, ToolMarkerDoesNotRequireActiveProject):

@@ -1348,37 +1348,55 @@ class SerenaConfig(SharedConfig, ModeSelectionDefinitionWithBaseModes):
 
     def get_registered_project(self, project_root_or_name: str, autoregister: bool = False) -> Optional[RegisteredProject]:
         """
+        Resolve a registered project by root path or display name.
+
+        Existing paths take precedence over names. This is important for git worktrees:
+        several roots commonly share the same project_name from the checked-in
+        .serena/project.yml, while their filesystem roots remain unambiguous.
+
         :param project_root_or_name: path to the project root or the name of the project
         :param autoregister: whether to auto-register projects that are not yet registered in Serena's global configuration
             but have an existing project configuration file. Project configuration files are never auto-generated.
         :return: the registered project, or None if not found
         """
-        # look for project by name
-        project_candidates = []
-        for project in self.projects:
-            if project.project_config.project_name == project_root_or_name:
-                project_candidates.append(project)
-        if len(project_candidates) == 1:
-            return project_candidates[0]
-        elif len(project_candidates) > 1:
-            raise ValueError(
-                f"Multiple projects found with name '{project_root_or_name}'. Please reference it by location instead. "
-                f"Locations: {[p.project_root for p in project_candidates]}"
-            )
-        # no project found by name; check if it's a path
         if os.path.isdir(project_root_or_name):
             for project in self.projects:
                 if project.matches_root_path(project_root_or_name):
                     return project
-        # no registered project found; optionally auto-register if a project configuration already exists
-        if autoregister:
+
+        project_candidates = [
+            project for project in self.projects if project.project_config.project_name == project_root_or_name
+        ]
+        if len(project_candidates) == 1:
+            return project_candidates[0]
+        if len(project_candidates) > 1:
+            raise ValueError(
+                f"Multiple projects found with name '{project_root_or_name}'. Please reference the desired worktree/project by location. "
+                f"Locations: {[str(p.project_root) for p in project_candidates]}"
+            )
+
+        if autoregister and os.path.isdir(project_root_or_name):
             config_path = self.get_project_yml_location(project_root_or_name)
             if os.path.isfile(config_path):
                 registered_project = RegisteredProject.from_project_root(project_root_or_name, serena_config=self)
                 self.add_registered_project(registered_project)
                 return registered_project
-        # nothing found
         return None
+
+    def get_project_selector(self, project: RegisteredProject) -> str:
+        """
+        Return an unambiguous selector accepted by get_registered_project.
+
+        Unique project names stay concise. If multiple worktrees/projects share the
+        same name, the canonical root path is used instead.
+        """
+        same_name_count = sum(1 for candidate in self.projects if candidate.project_name == project.project_name)
+        return project.project_name if same_name_count == 1 else str(project.project_root)
+
+    def get_project_selector_map(self, projects: Sequence[RegisteredProject] | None = None) -> dict[str, str]:
+        """Return unambiguous project selectors mapped to canonical project roots."""
+        selected = self.projects if projects is None else projects
+        return {self.get_project_selector(project): str(project.project_root) for project in selected}
 
     def get_project(self, project_root_or_name: str) -> Optional["Project"]:
         registered_project = self.get_registered_project(project_root_or_name)
@@ -1446,14 +1464,14 @@ class SerenaConfig(SharedConfig, ModeSelectionDefinitionWithBaseModes):
 
         return new_project
 
-    def remove_project(self, project_name: str) -> None:
-        # find the index of the project with the desired name and remove it
-        for i, project in enumerate(list(self.projects)):
-            if project.project_name == project_name:
-                del self.projects[i]
-                break
-        else:
-            raise ValueError(f"Project '{project_name}' not found in Serena configuration; valid project names: {self.project_names}")
+    def remove_project(self, project_root_or_name: str) -> None:
+        project = self.get_registered_project(project_root_or_name)
+        if project is None:
+            raise ValueError(
+                f"Project '{project_root_or_name}' not found in Serena configuration; "
+                f"valid selectors: {list(self.get_project_selector_map())}"
+            )
+        self.projects.remove(project)
         self._persist_projects()
 
     def _persist_projects(self) -> None:

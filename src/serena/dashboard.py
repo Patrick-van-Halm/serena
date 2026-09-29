@@ -208,6 +208,12 @@ class ReadNews:
 
 
 class SerenaDashboardAPI:
+    @staticmethod
+    def _registered_project_is_active(registered_project: Any, active_project: Any | None) -> bool:
+        if active_project is None:
+            return False
+        return registered_project.matches_root_path(active_project.project_root)
+
     BASE_PORT = SerenaPorts.DASHBOARD_API_BASE_PORT
 
     log = logging.getLogger(__qualname__)
@@ -561,7 +567,7 @@ class SerenaDashboardAPI:
                 {
                     "name": proj.project_name,
                     "path": str(proj.project_root),
-                    "is_active": proj.project_name == active_project_name,
+                    "is_active": self._registered_project_is_active(proj, project),
                 }
             )
 

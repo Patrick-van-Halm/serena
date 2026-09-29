@@ -1638,6 +1638,7 @@ class SerenaAgent:
         result_str += f"Loglevel: {self.serena_config.log_level}, trace_lsp_communication={self.serena_config.trace_lsp_communication}\n"
         if self._active_project is not None:
             result_str += f"Active project: {self._active_project.project_name}\n"
+            result_str += f"Active project root: {self._active_project.project_root}\n"
         else:
             result_str += "No active project\n"
         result_str += f"Agent interface: {self._agent_interface.value}\n"
@@ -1648,7 +1649,9 @@ class SerenaAgent:
         result_str += f"Full access mode: {self.serena_config.full_access_mode}\n"
         if self._language_backend.is_lsp() and self._active_project:
             result_str += f"Language server status: {self._active_project.get_language_server_manager_status()}\n"
-        result_str += "Available projects:\n" + "\n".join(list(self.serena_config.project_names)) + "\n"
+        project_selectors = self.serena_config.get_project_selector_map()
+        result_str += "Available projects (selector -> root):\n"
+        result_str += "\n".join(f"{selector} -> {root}" for selector, root in project_selectors.items()) + "\n"
         result_str += f"Active context: {self._context.name}\n"
 
         # Active modes

@@ -49,7 +49,9 @@ class ExternalProjectContextManager:
         self._active_project_context.__enter__()
 
         # switch the facades to the external project
-        entrypoint.set_external_project_(ExternalProjectExecution(registered_project.project_name, self._read_only, self._agent))
+        entrypoint.set_external_project_(
+            ExternalProjectExecution(str(registered_project.project_root), self._read_only, self._agent)
+        )
 
     def __exit__(self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None) -> None:
         self._agent.get_repl().entrypoint.set_external_project_(None)
@@ -77,7 +79,7 @@ class ExternalProjectsApi(FacadeApi):
         else:
             # all projects can be queried (the project server instantiates projects dynamically)
             relevant_projects = registered_projects
-        result = {p.project_name: str(p.project_root) for p in relevant_projects}
+        result = self._agent.serena_config.get_project_selector_map(relevant_projects)
         return JsonObject(result, JsonObjectRenderer(self._agent, -1))
 
     @facade_method(corresponding_tool=QueryProjectTool)

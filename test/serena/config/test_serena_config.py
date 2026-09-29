@@ -942,3 +942,44 @@ class TestTrustedProjectPathPatterns:
     def test_unrelated_path_is_not_trusted(self):
         """Control: the patterns above are not vacuously true."""
         assert not self._config("/opt/dev/projects/my_trusted_project", "/home/user/projects/**").is_trusted_project_path("/somewhere/else")
+
+
+
+def test_duplicate_project_names_use_root_selectors(tmp_path) -> None:
+    first_root = tmp_path / "main"
+    second_root = tmp_path / "worktree"
+    first_root.mkdir()
+    second_root.mkdir()
+
+    config = SerenaConfig()
+    config.projects = [
+        RegisteredProject(str(first_root), ProjectConfig(project_name="same-repo", language_servers=[])),
+        RegisteredProject(str(second_root), ProjectConfig(project_name="same-repo", language_servers=[])),
+    ]
+
+    assert config.get_project_selector_map() == {
+        str(first_root.resolve()): str(first_root.resolve()),
+        str(second_root.resolve()): str(second_root.resolve()),
+    }
+    assert config.get_registered_project(str(first_root)).project_root == first_root.resolve()
+    assert config.get_registered_project(str(second_root)).project_root == second_root.resolve()
+    with pytest.raises(ValueError, match="Multiple projects found"):
+        config.get_registered_project("same-repo")
+
+
+def test_existing_relative_path_wins_over_ambiguous_project_name(tmp_path, monkeypatch) -> None:
+    worktree = tmp_path / "same-repo"
+    other = tmp_path / "other"
+    worktree.mkdir()
+    other.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    config = SerenaConfig()
+    config.projects = [
+        RegisteredProject(str(worktree), ProjectConfig(project_name="same-repo", language_servers=[])),
+        RegisteredProject(str(other), ProjectConfig(project_name="same-repo", language_servers=[])),
+    ]
+
+    resolved = config.get_registered_project("same-repo")
+    assert resolved is not None
+    assert resolved.project_root == worktree.resolve()
