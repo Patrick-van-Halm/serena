@@ -24,7 +24,7 @@ from sensai.util import logging
 
 from serena import __version__
 from serena.config.context_mode import SerenaAgentContext
-from serena.config.serena_config import SerenaConfig, SerenaPaths
+from serena.config.serena_config import SerenaConfig, SerenaPaths, project_root_key, project_roots_equal
 from serena.shared_mcp_client import IncompatibleSharedMCPDaemonError, SharedMCPDaemonClient
 from serena.tools import Tool, ToolCallError, ToolRegistry
 
@@ -283,11 +283,7 @@ def _terminate_stale_daemon(pid: int | None) -> None:
 def _validate_runtime_project_root(requested_root: str, runtime_root: str) -> str:
     requested_path = Path(requested_root).expanduser().resolve()
     runtime_path = Path(runtime_root).expanduser().resolve()
-    try:
-        matches = requested_path.samefile(runtime_path)
-    except OSError:
-        matches = os.path.normcase(str(requested_path)) == os.path.normcase(str(runtime_path))
-    if not matches:
+    if not project_roots_equal(requested_path, runtime_path):
         raise ConnectionError(
             f"Shared Serena daemon routed bridge for {str(requested_path)!r} "
             f"to unexpected project {str(runtime_path)!r}"
@@ -344,7 +340,12 @@ class SerenaMCPBridge:
         self.client = ensure_shared_daemon(config)
         runtime_info = self.client.get_runtime_info(self.project_root, self.context.name, session_id=self.session_id)
         try:
-            _validate_runtime_project_root(self.project_root, runtime_info.project_root)
+            confirmed_root = _validate_runtime_project_root(self.project_root, runtime_info.project_root)
+            if runtime_info.project_id != project_root_key(confirmed_root):
+                raise ConnectionError(
+                    f"Shared Serena daemon returned inconsistent project identity {runtime_info.project_id!r} "
+                    f"for root {confirmed_root!r}"
+                )
         except Exception:
             self.client.close_bridge(
                 project_root=runtime_info.project_root,
@@ -352,6 +353,12 @@ class SerenaMCPBridge:
                 session_id=self.session_id,
             )
             raise
+
+        # From here on, use only the daemon-confirmed canonical root. project_name is
+        # display metadata and may be identical for several git worktrees.
+        self.project_root = confirmed_root
+        self.project_id = runtime_info.project_id
+        self.project_name = runtime_info.project_name
 
         self._heartbeat_stop = threading.Event()
         self._shutdown_started = threading.Event()
@@ -363,10 +370,16 @@ class SerenaMCPBridge:
         self._heartbeat_thread.start()
 
         Settings.model_config = SettingsConfigDict(env_prefix="FASTMCP_")
+        binding_instructions = (
+            f"\n\nProject binding for this MCP connection: display name={self.project_name!r}, "
+            f"canonical root={self.project_root!r}. The canonical root is authoritative. "
+            "Git worktrees may share the same project name; never use the name alone to infer "
+            "whether this project is active."
+        )
         self.server = FastMCP(
             name="Serena",
             website_url="https://oraios.github.io/serena",
-            instructions=runtime_info.instructions,
+            instructions=runtime_info.instructions + binding_instructions,
         )
         self.server._mcp_server.version = __version__
 

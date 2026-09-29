@@ -30,6 +30,8 @@ class IncompatibleSharedMCPDaemonError(ConnectionError):
 @dataclass(frozen=True, slots=True)
 class SharedMCPRuntimeInfo:
     project_root: str
+    project_id: str
+    project_name: str
     tool_names: list[str]
     instructions: str
     structured_tool_output: bool | None
@@ -90,6 +92,8 @@ class SharedMCPDaemonClient:
         data = response.json()
         return SharedMCPRuntimeInfo(
             project_root=str(data["project_root"]),
+            project_id=str(data["project_id"]),
+            project_name=str(data["project_name"]),
             tool_names=list(data["tool_names"]),
             instructions=str(data["instructions"]),
             structured_tool_output=data.get("structured_tool_output"),

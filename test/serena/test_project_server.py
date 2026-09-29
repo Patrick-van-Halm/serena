@@ -442,3 +442,53 @@ def test_shared_mcp_runtime_root_accepts_exact_worktree(tmp_path) -> None:
     canonical = str(root.resolve())
 
     assert ProjectServer._assert_mcp_runtime_root(canonical, canonical) == canonical
+
+
+
+def test_shared_mcp_runtime_repairs_inactive_agent_before_tool_call(project_server: ProjectServer, monkeypatch) -> None:
+    server = cast(Any, project_server)
+    correct_project = MagicMock(project_root="/worktree-a", project_name="same-repo")
+    agent = MagicMock()
+    agent.get_active_project.side_effect = [None, correct_project, correct_project]
+    runtime = MCPProjectRuntime(agent=agent, project_root="/worktree-a", context="codex", last_access=0.0)
+
+    monkeypatch.setattr(server, "_get_mcp_runtime", lambda root, context: runtime)
+    monkeypatch.setattr(server, "_assert_mcp_runtime_root", lambda requested, active: active)
+    tool = MagicMock()
+    tool.get_name.return_value = "read_file"
+    tool.apply_ex.return_value = "ok"
+    agent.get_exposed_tool_instances.return_value = [tool]
+    agent.get_tool_by_name.return_value = tool
+    server._mcp_runtimes_lock = threading.Lock()
+
+    result = server._call_mcp_tool(
+        MCPToolCallRequest(
+            project_root="/worktree-a",
+            context="codex",
+            session_id="chat",
+            tool_name="read_file",
+            arguments={},
+        )
+    )
+
+    assert result == "ok"
+    agent.activate_project_from_path_or_name.assert_called_once_with("/worktree-a")
+
+
+def test_shared_mcp_runtime_repairs_wrong_same_named_worktree(project_server: ProjectServer, monkeypatch) -> None:
+    server = cast(Any, project_server)
+    wrong = MagicMock(project_root="/worktree-b", project_name="same-repo")
+    correct = MagicMock(project_root="/worktree-a", project_name="same-repo")
+    agent = MagicMock()
+    agent.get_active_project.side_effect = [wrong, correct]
+
+    runtime = MCPProjectRuntime(agent=agent, project_root="/worktree-a", context="codex", last_access=0.0)
+    monkeypatch.setattr(
+        "serena.project_server.project_roots_equal",
+        lambda first, second: first == second,
+    )
+    monkeypatch.setattr(server, "_assert_mcp_runtime_root", lambda requested, active: active)
+
+    server._ensure_mcp_runtime_binding(runtime)
+
+    agent.activate_project_from_path_or_name.assert_called_once_with("/worktree-a")

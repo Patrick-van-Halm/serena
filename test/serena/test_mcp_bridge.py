@@ -126,3 +126,15 @@ def test_bridge_runtime_root_validation_accepts_same_worktree(tmp_path) -> None:
     root.mkdir()
 
     assert _validate_runtime_project_root(str(root), str(root)) == str(root.resolve())
+
+
+
+def test_bridge_project_id_uses_root_not_display_name(tmp_path) -> None:
+    from serena.config.serena_config import project_root_key
+
+    first = tmp_path / "worktree-a"
+    second = tmp_path / "worktree-b"
+    first.mkdir()
+    second.mkdir()
+
+    assert project_root_key(first) != project_root_key(second)

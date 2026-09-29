@@ -16,7 +16,7 @@ from flask import Flask, Response, abort, request
 from pydantic import BaseModel
 from sensai.util.logging import LogTime
 
-from serena.config.serena_config import LanguageBackend, SerenaConfig
+from serena.config.serena_config import LanguageBackend, SerenaConfig, project_root_key, project_roots_equal
 from serena.constants import SerenaPorts
 from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_build_id
 
@@ -51,6 +51,8 @@ class MCPRuntimeInfoRequest(BaseModel):
 
 class MCPRuntimeInfoResponse(BaseModel):
     project_root: str
+    project_id: str
+    project_name: str
     tool_names: list[str]
     instructions: str
     structured_tool_output: bool | None = None
@@ -86,6 +88,7 @@ class MCPProjectRuntime:
     last_access: float
     active_calls: int = 0
     bridge_sessions: dict[str, float] = field(default_factory=dict)
+    binding_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
 
 class CallFacadeMethodRequest(BaseModel):
@@ -244,25 +247,43 @@ class ProjectServer:
 
     @staticmethod
     def _assert_mcp_runtime_root(requested_root: str, active_root: str) -> str:
-        requested_path = Path(requested_root).expanduser().resolve()
-        active_path = Path(active_root).expanduser().resolve()
-        try:
-            matches = requested_path.samefile(active_path)
-        except OSError:
-            matches = os.path.normcase(str(requested_path)) == os.path.normcase(str(active_path))
-        if not matches:
+        if not project_roots_equal(requested_root, active_root):
             raise ValueError(
-                f"Shared MCP project routing mismatch: requested root {str(requested_path)!r}, "
-                f"but the agent activated {str(active_path)!r}"
+                f"Shared MCP project routing mismatch: requested root {str(Path(requested_root).expanduser().resolve())!r}, "
+                f"but the agent activated {str(Path(active_root).expanduser().resolve())!r}"
             )
-        return str(active_path)
+        return str(Path(active_root).expanduser().resolve())
+
+    def _ensure_mcp_runtime_binding(self, runtime: MCPProjectRuntime) -> None:
+        """
+        Ensure a pooled runtime remains bound to its canonical project root.
+
+        The display project_name is deliberately ignored: git worktrees normally share it.
+        If a prior operation left the dedicated runtime inactive or temporarily pointed at
+        another worktree, repair the binding before exposing any tool state/result.
+        """
+        with runtime.binding_lock:
+            active_project = runtime.agent.get_active_project()
+            if active_project is None or not project_roots_equal(active_project.project_root, runtime.project_root):
+                previous_root = None if active_project is None else active_project.project_root
+                log.warning(
+                    "Repairing shared MCP runtime binding: expected root=%s, active root=%s",
+                    runtime.project_root,
+                    previous_root,
+                )
+                runtime.agent.activate_project_from_path_or_name(runtime.project_root)
+                active_project = runtime.agent.get_active_project()
+
+            if active_project is None:
+                raise ValueError(f"Shared MCP runtime for {runtime.project_root!r} has no active project after repair")
+            self._assert_mcp_runtime_root(runtime.project_root, active_project.project_root)
 
     @staticmethod
     def _mcp_runtime_key(project_root: str, context: str) -> tuple[str, str]:
         root = Path(project_root).expanduser().resolve()
         if not root.is_dir():
             raise FileNotFoundError(f"Shared MCP project root is not a directory: {root}")
-        return str(root), context
+        return project_root_key(root), context
 
     def _get_mcp_runtime(self, project_root: str, context: str) -> MCPProjectRuntime:
         key = self._mcp_runtime_key(project_root, context)
@@ -318,6 +339,10 @@ class ProjectServer:
 
     def _get_mcp_runtime_info(self, req: MCPRuntimeInfoRequest) -> MCPRuntimeInfoResponse:
         runtime = self._get_mcp_runtime(req.project_root, req.context)
+        self._ensure_mcp_runtime_binding(runtime)
+        active_project = runtime.agent.get_active_project()
+        assert active_project is not None
+
         # Project selection is owned by the bridge/router. Exposing activate_project would
         # let one conversation retarget the shared agent underneath other conversations.
         tool_names = [
@@ -333,6 +358,8 @@ class ProjectServer:
         context = runtime.agent.get_context()
         return MCPRuntimeInfoResponse(
             project_root=runtime.project_root,
+            project_id=project_root_key(runtime.project_root),
+            project_name=active_project.project_name,
             tool_names=tool_names,
             instructions=runtime.agent.create_connection_prompt(),
             structured_tool_output=context.structured_tool_output,
@@ -363,26 +390,32 @@ class ProjectServer:
         if req.tool_name == "activate_project":
             raise ValueError("activate_project is disabled for shared MCP runtimes; project routing is bridge-controlled")
 
-        exposed_names = {tool.get_name() for tool in runtime.agent.get_exposed_tool_instances()}
-        if req.tool_name not in exposed_names:
-            raise ValueError(f"Tool {req.tool_name!r} is not exposed by this shared runtime")
+        # Serialize the binding check with the complete call. This prevents a second
+        # request from observing a temporary external-project context and "repairing"
+        # the runtime underneath the first request.
+        with runtime.binding_lock:
+            self._ensure_mcp_runtime_binding(runtime)
 
-        with self._mcp_runtimes_lock:
-            runtime.active_calls += 1
-            now = time.monotonic()
-            runtime.bridge_sessions[req.session_id] = now
-            runtime.last_access = now
-        try:
-            tool = runtime.agent.get_tool_by_name(req.tool_name)
-            return tool.apply_ex(
-                catch_exceptions=False,
-                session_id_override=req.session_id,
-                **req.arguments,
-            )
-        finally:
+            exposed_names = {tool.get_name() for tool in runtime.agent.get_exposed_tool_instances()}
+            if req.tool_name not in exposed_names:
+                raise ValueError(f"Tool {req.tool_name!r} is not exposed by this shared runtime")
+
             with self._mcp_runtimes_lock:
-                runtime.active_calls -= 1
-                runtime.last_access = time.monotonic()
+                runtime.active_calls += 1
+                now = time.monotonic()
+                runtime.bridge_sessions[req.session_id] = now
+                runtime.last_access = now
+            try:
+                tool = runtime.agent.get_tool_by_name(req.tool_name)
+                return tool.apply_ex(
+                    catch_exceptions=False,
+                    session_id_override=req.session_id,
+                    **req.arguments,
+                )
+            finally:
+                with self._mcp_runtimes_lock:
+                    runtime.active_calls -= 1
+                    runtime.last_access = time.monotonic()
 
     def _evict_mcp_runtimes(self) -> None:
         now = time.monotonic()
