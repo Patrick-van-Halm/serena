@@ -281,14 +281,18 @@ def _terminate_stale_daemon(pid: int | None) -> None:
 
 
 def _validate_runtime_project_root(requested_root: str, runtime_root: str) -> str:
-    canonical_requested = str(Path(requested_root).expanduser().resolve())
-    canonical_runtime = str(Path(runtime_root).expanduser().resolve())
-    if canonical_runtime != canonical_requested:
+    requested_path = Path(requested_root).expanduser().resolve()
+    runtime_path = Path(runtime_root).expanduser().resolve()
+    try:
+        matches = requested_path.samefile(runtime_path)
+    except OSError:
+        matches = os.path.normcase(str(requested_path)) == os.path.normcase(str(runtime_path))
+    if not matches:
         raise ConnectionError(
-            f"Shared Serena daemon routed bridge for {canonical_requested!r} "
-            f"to unexpected project {canonical_runtime!r}"
+            f"Shared Serena daemon routed bridge for {str(requested_path)!r} "
+            f"to unexpected project {str(runtime_path)!r}"
         )
-    return canonical_runtime
+    return str(runtime_path)
 
 
 def ensure_shared_daemon(serena_config: SerenaConfig, startup_timeout: float = 30.0) -> SharedMCPDaemonClient:

@@ -17,7 +17,7 @@ class ListQueryableProjectsTool(Tool, ToolMarkerOptional, ToolMarkerDoesNotRequi
         Lists available projects that can be queried with `query_project_tool`.
 
         :param symbol_access: whether to return only projects for which symbol access is available. Default: true
-        :return: project names and roots
+        :return: unambiguous project selectors and roots
         """
         # determine relevant projects
         registered_projects = self.agent.serena_config.projects

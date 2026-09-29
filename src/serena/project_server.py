@@ -244,13 +244,18 @@ class ProjectServer:
 
     @staticmethod
     def _assert_mcp_runtime_root(requested_root: str, active_root: str) -> str:
-        canonical_active_root = str(Path(active_root).expanduser().resolve())
-        if canonical_active_root != requested_root:
+        requested_path = Path(requested_root).expanduser().resolve()
+        active_path = Path(active_root).expanduser().resolve()
+        try:
+            matches = requested_path.samefile(active_path)
+        except OSError:
+            matches = os.path.normcase(str(requested_path)) == os.path.normcase(str(active_path))
+        if not matches:
             raise ValueError(
-                f"Shared MCP project routing mismatch: requested root {requested_root!r}, "
-                f"but the agent activated {canonical_active_root!r}"
+                f"Shared MCP project routing mismatch: requested root {str(requested_path)!r}, "
+                f"but the agent activated {str(active_path)!r}"
             )
-        return canonical_active_root
+        return str(active_path)
 
     @staticmethod
     def _mcp_runtime_key(project_root: str, context: str) -> tuple[str, str]:
