@@ -71,6 +71,7 @@ class ExternalProjectsApi(FacadeApi):
         :param symbol_access: whether to list only projects for which symbol-level access is available
         :return: the project names mapped to their root directories
         """
+        self._agent.serena_config.refresh_registered_projects()
         registered_projects = self._agent.serena_config.projects
         if symbol_access and self._agent.get_language_backend().is_jetbrains():
             # only projects with open IDE instances can be queried

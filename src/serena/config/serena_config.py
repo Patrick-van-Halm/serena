@@ -362,6 +362,26 @@ class SerenaConfigError(Exception):
     pass
 
 
+def canonical_project_root(path: str | Path) -> Path:
+    """Return the canonical filesystem identity used for Serena project roots."""
+    return Path(path).expanduser().resolve()
+
+
+def project_root_key(path: str | Path) -> str:
+    """Stable dictionary key for a project root on the current platform."""
+    return os.path.normcase(str(canonical_project_root(path)))
+
+
+def project_roots_equal(first: str | Path, second: str | Path) -> bool:
+    """Compare project roots by filesystem identity, with a canonical-path fallback."""
+    first_path = canonical_project_root(first)
+    second_path = canonical_project_root(second)
+    try:
+        return first_path.samefile(second_path)
+    except OSError:
+        return os.path.normcase(str(first_path)) == os.path.normcase(str(second_path))
+
+
 DEFAULT_PROJECT_SERENA_FOLDER_LOCATION = "$projectDir/" + SERENA_MANAGED_DIR_NAME
 """
 The default template for the project Serena folder location.
@@ -866,7 +886,7 @@ class RegisteredProject(ToStringMixin):
         :param project_config: the configuration of the project
         :param project_instance: an existing project instance (if already loaded)
         """
-        self.project_root = Path(project_root).resolve()
+        self.project_root = canonical_project_root(project_root)
         self.project_config = project_config
         self._project_instance = project_instance
 
@@ -914,11 +934,7 @@ class RegisteredProject(ToStringMixin):
         :return: True if the path matches the project root, False otherwise (including the case
             where this project's root directory no longer exists, e.g. a removed git worktree)
         """
-        try:
-            return self.project_root.samefile(Path(path).resolve())
-        except OSError:
-            # typically raised if the path does not exist (e.g., a removed git worktree)
-            return False
+        return project_roots_equal(self.project_root, path)
 
     def get_project_instance(self, serena_config: "SerenaConfig") -> "Project":
         """
@@ -1346,6 +1362,30 @@ class SerenaConfig(SharedConfig, ModeSelectionDefinitionWithBaseModes):
     def project_names(self) -> list[str]:
         return sorted(project.project_config.project_name for project in self.projects)
 
+    def refresh_registered_projects(self) -> None:
+        """
+        Refresh the project registry from disk while preserving already-loaded Project instances.
+
+        Shared MCP runtimes are long-lived. Another bridge may auto-register a sibling git
+        worktree after this config instance was created, so name uniqueness cannot be
+        inferred from a stale in-memory registry.
+        """
+        if self.config_file_path is None:
+            return
+
+        persisted = SerenaConfig.from_config_file(generate_if_missing=False)
+        current_by_root = {project_root_key(project.project_root): project for project in self.projects}
+        refreshed: list[RegisteredProject] = []
+        for persisted_project in persisted.projects:
+            key = project_root_key(persisted_project.project_root)
+            refreshed.append(current_by_root.get(key, persisted_project))
+
+        self.projects = refreshed
+        self._projects_at_load = {str(project.project_root) for project in refreshed}
+        # project_names/project_paths are cached properties; invalidate any stale views.
+        self.__dict__.pop("project_names", None)
+        self.__dict__.pop("project_paths", None)
+
     def get_registered_project(self, project_root_or_name: str, autoregister: bool = False) -> Optional[RegisteredProject]:
         """
         Resolve a registered project by root path or display name.
@@ -1363,6 +1403,10 @@ class SerenaConfig(SharedConfig, ModeSelectionDefinitionWithBaseModes):
             for project in self.projects:
                 if project.matches_root_path(project_root_or_name):
                     return project
+        else:
+            # A display name is only safe to resolve against a fresh registry because
+            # another daemon runtime may have registered a same-named worktree.
+            self.refresh_registered_projects()
 
         project_candidates = [
             project for project in self.projects if project.project_config.project_name == project_root_or_name

@@ -19,7 +19,9 @@ class ListQueryableProjectsTool(Tool, ToolMarkerOptional, ToolMarkerDoesNotRequi
         :param symbol_access: whether to return only projects for which symbol access is available. Default: true
         :return: unambiguous project selectors and roots
         """
-        # determine relevant projects
+        # determine relevant projects from a fresh registry so sibling worktrees
+        # registered by other bridge runtimes are represented unambiguously.
+        self.agent.serena_config.refresh_registered_projects()
         registered_projects = self.agent.serena_config.projects
         if symbol_access:
             backend = self.agent.get_language_backend()

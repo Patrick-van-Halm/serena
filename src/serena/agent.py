@@ -39,6 +39,7 @@ from serena.config.serena_config import (
     RegisteredProject,
     SerenaConfig,
     SerenaPaths,
+    project_roots_equal,
     ToolInclusionDefinition,
 )
 from serena.jetbrains import launch_coordinator as jetbrains_launch_coordinator
@@ -1445,7 +1446,7 @@ class SerenaAgent:
         :return: True if the project was newly activated, False if it was already active
         """
         # check if the project is already active
-        if self._active_project is not None and self._active_project.project_root == project.project_root:
+        if self._active_project is not None and project_roots_equal(self._active_project.project_root, project.project_root):
             return False
 
         log.info(f"Activating {project.project_name} at {project.project_root}")
@@ -1633,6 +1634,11 @@ class SerenaAgent:
         """
         :return: a string overview of the current configuration, including the active and available configuration options
         """
+        # Another shared runtime may have auto-registered a sibling worktree since
+        # this agent started. Refresh only the registry; the active Project instance
+        # itself remains untouched.
+        self.serena_config.refresh_registered_projects()
+
         result_str = "Current configuration:\n"
         result_str += f"Serena version: {self.version}\n"
         result_str += f"Loglevel: {self.serena_config.log_level}, trace_lsp_communication={self.serena_config.trace_lsp_communication}\n"

@@ -983,3 +983,51 @@ def test_existing_relative_path_wins_over_ambiguous_project_name(tmp_path, monke
     resolved = config.get_registered_project("same-repo")
     assert resolved is not None
     assert resolved.project_root == worktree.resolve()
+
+
+
+def test_refresh_registered_projects_discovers_same_named_worktree_and_preserves_loaded_instance(
+    tmp_path, monkeypatch
+) -> None:
+    main_root = tmp_path / "main"
+    worktree_root = tmp_path / "worktree"
+    main_root.mkdir()
+    worktree_root.mkdir()
+
+    main_config = ProjectConfig(project_name="same-repo", language_servers=[])
+    worktree_config = ProjectConfig(project_name="same-repo", language_servers=[])
+    loaded_instance = object()
+    current = RegisteredProject(str(main_root), main_config, project_instance=loaded_instance)
+
+    config = SerenaConfig()
+    config._config_file_path = str(tmp_path / "serena_config.yml")
+    config.projects = [current]
+
+    persisted = SerenaConfig()
+    persisted.projects = [
+        RegisteredProject(str(main_root), main_config),
+        RegisteredProject(str(worktree_root), worktree_config),
+    ]
+    monkeypatch.setattr(SerenaConfig, "from_config_file", classmethod(lambda cls, generate_if_missing=False: persisted))
+
+    config.refresh_registered_projects()
+
+    assert len(config.projects) == 2
+    assert config.projects[0] is current
+    assert config.projects[0]._project_instance is loaded_instance
+    with pytest.raises(ValueError, match="Multiple projects found"):
+        config.get_registered_project("same-repo")
+
+
+def test_project_roots_equal_accepts_symlink_alias(tmp_path) -> None:
+    from serena.config.serena_config import project_roots_equal
+
+    root = tmp_path / "worktree"
+    root.mkdir()
+    alias = tmp_path / "alias"
+    try:
+        alias.symlink_to(root, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable on this platform")
+
+    assert project_roots_equal(root, alias)
