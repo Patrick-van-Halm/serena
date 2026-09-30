@@ -312,18 +312,28 @@ def ensure_shared_daemon(serena_config: SerenaConfig, startup_timeout: float = 3
             pass
 
         process = _spawn_shared_daemon()
-        deadline = time.monotonic() + startup_timeout
-        last_error: Exception | None = None
-        while time.monotonic() < deadline:
-            if process.poll() is not None:
-                raise ConnectionError(f"Shared Serena daemon exited during startup with code {process.returncode}")
-            try:
-                return SharedMCPDaemonClient(serena_config)
-            except ConnectionError as e:
-                last_error = e
-                time.sleep(0.1)
+        try:
+            deadline = time.monotonic() + startup_timeout
+            last_error: Exception | None = None
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise ConnectionError(f"Shared Serena daemon exited during startup with code {process.returncode}")
+                try:
+                    return SharedMCPDaemonClient(serena_config)
+                except ConnectionError as e:
+                    last_error = e
+                    time.sleep(0.1)
 
-        raise ConnectionError(f"Shared Serena daemon did not become ready within {startup_timeout:.1f}s: {last_error}")
+            raise ConnectionError(f"Shared Serena daemon did not become ready within {startup_timeout:.1f}s: {last_error}")
+        except BaseException:
+            # clean up only this startup's child before releasing the lock, including on interruption
+            try:
+                if process.poll() is None:
+                    _terminate_stale_daemon(process.pid)
+                process.wait(timeout=2.0)
+            except Exception:
+                log.exception("Failed to clean up shared Serena daemon startup pid=%s", process.pid)
+            raise
 
 
 class SerenaMCPBridge:

@@ -18,6 +18,12 @@ T = TypeVar("T")
 
 
 class TaskExecutor:
+    """Serial task executor whose dispatcher runs only while work is queued or executing.
+
+    Idle executors hold no live thread, allowing their owners (including bound completion
+    callbacks) to be garbage-collected when a shared project runtime is evicted.
+    """
+
     def __init__(self, name: str, task_completion_callback: Callable[[], None] | None = None):
         """
         :param name: the name of the task executor, used for logging purposes
@@ -25,15 +31,13 @@ class TaskExecutor:
             (regardless of success, failure, or cancellation)
         """
         self._task_executor_lock = threading.Lock()
-        self._task_executor_condition = threading.Condition(self._task_executor_lock)
         self._task_executor_queue: deque[TaskExecutor.Task] = deque()
-        self._task_executor_thread = Thread(target=self._process_task_queue, name=name, daemon=True)
+        self._task_executor_thread_name = name
+        self._task_executor_thread: Thread | None = None
         self._task_executor_task_index = 1
         self._task_executor_current_task: TaskExecutor.Task | None = None
         self._task_executor_last_executed_task_info: TaskExecutor.TaskInfo | None = None
         self._task_completion_callback = task_completion_callback
-        # Publish a fully initialized executor before the dispatcher can run.
-        self._task_executor_thread.start()
 
     class Task(ToStringMixin, Generic[T]):
         def __init__(self, function: Callable[[], T], name: str, logged: bool = True, timeout: float | None = None):
@@ -143,10 +147,11 @@ class TaskExecutor:
 
     def _process_task_queue(self) -> None:
         while True:
-            # Wait without polling; recheck the predicate after every wake-up.
-            with self._task_executor_condition:
-                while not self._task_executor_queue:
-                    self._task_executor_condition.wait()
+            # retire atomically with queue inspection so new work either joins this dispatcher or starts its successor
+            with self._task_executor_lock:
+                if not self._task_executor_queue:
+                    self._task_executor_thread = None
+                    return
                 task = self._task_executor_queue.popleft()
                 self._task_executor_current_task = task
 
@@ -241,8 +246,16 @@ class TaskExecutor:
                 log.info(f"Scheduling {task_name}")
             task_obj = self.Task(function=task, name=task_name, logged=logged, timeout=timeout)
             self._task_executor_queue.append(task_obj)
-            # The condition shares the lock held here, preventing lost wake-ups.
-            self._task_executor_condition.notify()
+
+            # start a dispatcher only when needed, publishing it under the same lock used for retirement
+            if self._task_executor_thread is None:
+                self._task_executor_thread = Thread(target=self._process_task_queue, name=self._task_executor_thread_name, daemon=True)
+                try:
+                    self._task_executor_thread.start()
+                except RuntimeError:
+                    self._task_executor_thread = None
+                    self._task_executor_queue.pop()
+                    raise
             return task_obj
 
     def execute_task(self, task: Callable[[], T], name: str | None = None, logged: bool = True, timeout: float | None = None) -> T:
