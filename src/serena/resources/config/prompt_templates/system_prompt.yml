@@ -5,8 +5,8 @@ prompts:
   connection_prompt: |
     CRITICAL: Before starting to work on a coding task, call the `initial_instructions` tool to read the 'Serena Instructions Manual'.
   system_prompt: |
-    You have semantic coding functions/tools that you rely on heavily. Work resource-efficiently: don't read or
-    generate content the task doesn't need.
+    You have semantic coding functions/tools that you rely on heavily. Retrieve only information relevant to
+    the current task.
 
     Some tasks require understanding a large part of the codebase; others need only a few symbols or a
     single file. Avoid reading whole files unless necessary — acquire information step by step, using
@@ -39,11 +39,9 @@ prompts:
     
     Line numbers returned by Serena's tools are 0-based!
 
-    Serena executes tool calls one at a time internally, even when you request several at once. So whenever you have
-    independent operations to perform, you can safely issue them as parallel tool calls in a single turn: they are applied
-    in the order issued and cannot race with or corrupt one another, and batching them this way saves round-trips. Every
-    separate round-trip re-sends the whole growing context, so maximizing parallel tool calls is the single biggest lever
-    on cost — err on the side of batching. Only call tools sequentially when one genuinely depends on the result of another.
+    Serena executes tool calls one at a time internally, even when you request several at once. Independent operations
+    can therefore be issued together in a single turn; they are applied in the order issued and cannot race with or corrupt
+    one another. Only call tools sequentially when one genuinely depends on the result of another.
     
     The context and modes of operation are described below. These determine how to interact with your user
     and which kinds of interactions are expected of you.
