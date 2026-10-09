@@ -2,6 +2,8 @@
 
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,6 +12,9 @@ import requests
 from serena.config.serena_config import SerenaConfig
 from serena.constants import SerenaPorts
 from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_build_id
+from serena.util.tool_call import ToolCall, ToolCallContext
+
+log = logging.getLogger(__name__)
 
 
 class IncompatibleSharedMCPDaemonError(ConnectionError):
@@ -47,7 +52,8 @@ class SharedMCPDaemonClient:
 
     def __init__(self, serena_config: SerenaConfig, host: str = "127.0.0.1", port: int = SerenaPorts.PROJECT_SERVER_PORT) -> None:
         self._base_url = f"http://{host}:{port}"
-        self._timeout = max(float(serena_config.tool_timeout) - 1.0, 1.0)
+        self._tool_timeout = max(float(serena_config.tool_timeout), 1.0)
+        self._timeout = self._tool_timeout + ToolCall.RESPONSE_GRACE_SECONDS
         self._headers = {"Authorization": f"Bearer {serena_config.auth_secret}"}
 
         try:
@@ -120,6 +126,16 @@ class SharedMCPDaemonClient:
             # Best-effort only; bridge leases expire server-side after crashes.
             pass
 
+    def cancel_tool_call(self, session_id: str, request_id: str) -> None:
+        """Deliver cancellation separately from the potentially blocked tool request."""
+        response = requests.post(
+            f"{self._base_url}/mcp/cancel-tool-call",
+            json={"session_id": session_id, "request_id": request_id},
+            headers=self._headers,
+            timeout=(1.0, 1.0),
+        )
+        response.raise_for_status()
+
     def call_tool(
         self,
         project_root: str,
@@ -128,18 +144,38 @@ class SharedMCPDaemonClient:
         tool_name: str,
         arguments: dict[str, Any],
     ) -> str:
-        response = requests.post(
-            f"{self._base_url}/mcp/tool-call",
-            json={
-                "project_root": project_root,
-                "context": context,
-                "session_id": session_id,
-                "tool_name": tool_name,
-                "arguments": arguments,
-            },
-            headers=self._headers,
-            timeout=self._timeout,
-        )
+        # carry one deadline through worker admission, HTTP dispatch, server queueing, and execution
+        call_context = ToolCallContext.current()
+        call = call_context.call if call_context is not None else ToolCall(self._tool_timeout)
+        call.check()
+        deadline = time.time() + call.remaining
+        call.mark_dispatched()
+        try:
+            response = requests.post(
+                f"{self._base_url}/mcp/tool-call",
+                json={
+                    "project_root": project_root,
+                    "context": context,
+                    "session_id": session_id,
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                    "request_id": call.request_id,
+                    "deadline": deadline,
+                },
+                headers=self._headers,
+                timeout=(5.0, call.remaining + ToolCall.RESPONSE_GRACE_SECONDS),
+            )
+        except requests.RequestException as e:
+            # cancellation is best-effort; a lost response never proves an edit did not happen
+            call.cancel()
+            try:
+                self.cancel_tool_call(session_id, call.request_id)
+            except requests.RequestException:
+                log.warning("Cancellation delivery failed for %s; outcome unknown", call.request_id, exc_info=True)
+            raise ConnectionError(
+                f"Shared MCP transport failed for tool call {call.request_id}; outcome=unknown. "
+                "Verify changes before retrying; the operation may still be running."
+            ) from e
         if not response.ok:
             raise ValueError(f"Shared MCP daemon error ({response.status_code}): {response.text[:2000]}")
         return response.text

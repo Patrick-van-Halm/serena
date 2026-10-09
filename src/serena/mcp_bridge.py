@@ -27,6 +27,7 @@ from serena.config.context_mode import SerenaAgentContext
 from serena.config.serena_config import SerenaConfig, SerenaPaths, project_root_key, project_roots_equal
 from serena.shared_mcp_client import IncompatibleSharedMCPDaemonError, SharedMCPDaemonClient
 from serena.tools import Tool, ToolCallError, ToolRegistry
+from serena.util.tool_call import AsyncToolCallRunner, ToolCall, ToolCallCancellationHandler
 
 log = logging.getLogger(__name__)
 
@@ -113,7 +114,15 @@ def _sanitize_for_openai_tools(schema: dict) -> dict:
 class BridgeFastMCPTool(FastMCPTool):
     """MCP tool whose schema comes from a Serena Tool and whose execution is remote."""
 
-    def __init__(self, tool: Tool, openai_tool_compatible: bool, structured_output: bool | None):
+    def __init__(
+        self,
+        tool: Tool,
+        openai_tool_compatible: bool,
+        structured_output: bool | None,
+        *,
+        tool_timeout: float = 240.0,
+        cancellation_handler: ToolCallCancellationHandler | None = None,
+    ):
         func_name = tool.get_name()
         func_doc = tool.get_apply_docstring() or ""
         func_arg_metadata = tool.get_apply_fn_metadata(structured_output=structured_output)
@@ -144,9 +153,14 @@ class BridgeFastMCPTool(FastMCPTool):
                 description = param_doc.description.strip().strip(".") + "."
                 property_schema["description"] = description[0].upper() + description[1:]
 
-        def execute_fn(**kwargs) -> str:
+        async def execute_fn(**kwargs) -> str:
             try:
-                return tool.apply_ex(log_call=True, catch_exceptions=False, **kwargs)
+                return await AsyncToolCallRunner.run(
+                    lambda: tool.apply_ex(log_call=True, catch_exceptions=False, **kwargs),
+                    timeout=tool_timeout,
+                    cancellation_handler=cancellation_handler,
+                    response_grace=ToolCall.RESPONSE_GRACE_SECONDS,
+                )
             except ToolCallError as e:
                 raise ToolError(e.get_error_message()) from e
 
@@ -160,7 +174,7 @@ class BridgeFastMCPTool(FastMCPTool):
             description=func_doc,
             parameters=parameters,
             fn_metadata=func_arg_metadata,
-            is_async=False,
+            is_async=True,
             context_kwarg="mcp_ctx",
             annotations=annotations,
             title=title,
@@ -405,6 +419,8 @@ class SerenaMCPBridge:
                 proxy_tool,
                 openai_tool_compatible=openai_compatible,
                 structured_output=runtime_info.structured_tool_output,
+                tool_timeout=float(config.tool_timeout),
+                cancellation_handler=self,
             )
             self.server._tool_manager._tools[tool_name] = mcp_tool
 
@@ -447,6 +463,10 @@ class SerenaMCPBridge:
                 "apply_ex": apply_ex,
             },
         )
+
+    def cancel_tool_call(self, call: ToolCall) -> None:
+        """Forward host cancellation without retrying the original operation."""
+        self.client.cancel_tool_call(self.session_id, call.request_id)
 
     def _unregister_bridge(self) -> None:
         try:

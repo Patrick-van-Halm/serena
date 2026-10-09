@@ -7,18 +7,22 @@ import pickle
 import secrets
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import requests as requests_lib
 from flask import Flask, Response, abort, request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sensai.util.logging import LogTime
 
 from serena.config.serena_config import LanguageBackend, SerenaConfig, project_root_key, project_roots_equal
 from serena.constants import SerenaPorts
+from serena.shared_mcp_calls import DuplicateToolCallError, SharedMCPCalls
 from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_build_id
+from serena.util.tool_call import ToolCall, ToolCallBusyError, ToolCallContext, ToolCallInterrupted
 
 if TYPE_CHECKING:
     from serena.agent import SerenaAgent
@@ -76,6 +80,13 @@ class MCPToolCallRequest(BaseModel):
     session_id: str
     tool_name: str
     arguments: dict[str, Any]
+    request_id: str = Field(default_factory=lambda: secrets.token_hex(16), min_length=1, max_length=128)
+    deadline: float | None = Field(default=None, allow_inf_nan=False)
+
+
+class MCPToolCancelRequest(BaseModel):
+    session_id: str
+    request_id: str = Field(min_length=1, max_length=128)
 
 
 @dataclass
@@ -87,6 +98,7 @@ class MCPProjectRuntime:
     context: str
     last_access: float
     active_calls: int = 0
+    current_call: ToolCall | None = field(default=None, repr=False)
     bridge_sessions: dict[str, float] = field(default_factory=dict)
     binding_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
@@ -116,6 +128,7 @@ class ProjectServer:
     :class:`~serena.tools.query_project_tools.QueryProjectTool`.
     """
 
+    MCP_RUNTIME_MAX_CALLS = 64
     MCP_RUNTIME_IDLE_SECONDS = 30 * 60
     MCP_RUNTIME_MAX_PROJECTS = 4
     MCP_RUNTIME_EVICTION_INTERVAL_SECONDS = 60
@@ -148,6 +161,7 @@ class ProjectServer:
         self._mcp_runtime_load_locks: dict[tuple[str, str], threading.Lock] = {}
         self._mcp_runtimes_lock = threading.Lock()
         self._mcp_runtime_stop_event = threading.Event()
+        self._mcp_calls = SharedMCPCalls(float(serena_config.tool_timeout))
 
         self._port = port
         self._host = host
@@ -223,11 +237,26 @@ class ProjectServer:
             self._close_mcp_bridge(req)
             return Response("ok", mimetype="text/plain")
 
+        @self._app.route("/mcp/cancel-tool-call", methods=["POST"])
+        def mcp_cancel_tool_call() -> Response:
+            req = MCPToolCancelRequest.model_validate(request.get_json())
+            try:
+                outcome = self._mcp_calls.cancel(req.session_id, req.request_id)
+            except ToolCallBusyError as e:
+                return Response(str(e), status=429, mimetype="text/plain")
+            return Response(json.dumps({"request_id": req.request_id, "outcome": outcome}), mimetype="application/json")
+
         @self._app.route("/mcp/tool-call", methods=["POST"])
         def mcp_tool_call() -> Response:
             req = MCPToolCallRequest.model_validate(request.get_json())
             try:
                 result = self._call_mcp_tool(req)
+            except ToolCallInterrupted as e:
+                return Response(str(e), status=408, mimetype="text/plain")
+            except DuplicateToolCallError as e:
+                return Response(str(e), status=409, mimetype="text/plain")
+            except ToolCallBusyError as e:
+                return Response(str(e), status=429, mimetype="text/plain")
             except Exception as e:
                 log.warning("Shared MCP tool call failed: %s", e)
                 return Response(f"{type(e).__name__}: {e}", status=400, mimetype="text/plain")
@@ -339,31 +368,37 @@ class ProjectServer:
 
     def _get_mcp_runtime_info(self, req: MCPRuntimeInfoRequest) -> MCPRuntimeInfoResponse:
         runtime = self._get_mcp_runtime(req.project_root, req.context)
-        self._ensure_mcp_runtime_binding(runtime)
-        active_project = runtime.agent.get_active_project()
-        assert active_project is not None
+        call = ToolCall(float(self.get_serena_config().tool_timeout))
+        with self._mcp_runtime_use(runtime):
+            call.acquire(runtime.binding_lock)
+            try:
+                self._ensure_mcp_runtime_binding(runtime)
+                active_project = runtime.agent.get_active_project()
+                assert active_project is not None
 
-        # Project selection is owned by the bridge/router. Exposing activate_project would
-        # let one conversation retarget the shared agent underneath other conversations.
-        tool_names = [
-            tool.get_name()
-            for tool in runtime.agent.get_exposed_tool_instances()
-            if tool.get_name() != "activate_project"
-        ]
-        if req.session_id:
-            with self._mcp_runtimes_lock:
-                runtime.bridge_sessions[req.session_id] = time.monotonic()
-                runtime.last_access = time.monotonic()
+                # Project selection is owned by the bridge/router. Exposing activate_project would
+                # let one conversation retarget the shared agent underneath other conversations.
+                tool_names = [
+                    tool.get_name()
+                    for tool in runtime.agent.get_exposed_tool_instances()
+                    if tool.get_name() != "activate_project"
+                ]
+                if req.session_id:
+                    with self._mcp_runtimes_lock:
+                        runtime.bridge_sessions[req.session_id] = time.monotonic()
+                        runtime.last_access = time.monotonic()
 
-        context = runtime.agent.get_context()
-        return MCPRuntimeInfoResponse(
-            project_root=runtime.project_root,
-            project_id=project_root_key(runtime.project_root),
-            project_name=active_project.project_name,
-            tool_names=tool_names,
-            instructions=runtime.agent.create_connection_prompt(),
-            structured_tool_output=context.structured_tool_output,
-        )
+                context = runtime.agent.get_context()
+                return MCPRuntimeInfoResponse(
+                    project_root=runtime.project_root,
+                    project_id=project_root_key(runtime.project_root),
+                    project_name=active_project.project_name,
+                    tool_names=tool_names,
+                    instructions=runtime.agent.create_connection_prompt(),
+                    structured_tool_output=context.structured_tool_output,
+                )
+            finally:
+                runtime.binding_lock.release()
 
     def _touch_mcp_bridge(self, req: MCPBridgeSessionRequest) -> None:
         key = self._mcp_runtime_key(req.project_root, req.context)
@@ -385,37 +420,66 @@ class ProjectServer:
         if runtime is not None:
             runtime.agent.close_session(req.session_id)
 
+    @contextmanager
+    def _mcp_runtime_use(self, runtime: MCPProjectRuntime, *, admit: bool = False) -> Iterator[None]:
+        # pin both waiting requests and actual workers, whose lifetimes can differ after cancellation
+        with self._mcp_runtimes_lock:
+            if admit and runtime.active_calls >= self.MCP_RUNTIME_MAX_CALLS:
+                raise ToolCallBusyError("Shared project runtime is busy; the operation was not submitted. Reduce concurrent calls.")
+            runtime.active_calls += 1
+        try:
+            yield
+        finally:
+            with self._mcp_runtimes_lock:
+                runtime.active_calls -= 1
+                runtime.last_access = time.monotonic()
+
+    @contextmanager
+    def _mcp_call_guard(self, runtime: MCPProjectRuntime, req: MCPToolCallRequest, call: ToolCall) -> Iterator[None]:
+        # hold the binding on the executor thread until the real operation exits, not until its caller gives up
+        with self._mcp_runtime_use(runtime):
+            call.acquire(runtime.binding_lock)
+            try:
+                with self._mcp_runtimes_lock:
+                    runtime.current_call = call
+                self._ensure_mcp_runtime_binding(runtime)
+                exposed_names = {tool.get_name() for tool in runtime.agent.get_exposed_tool_instances()}
+                if req.tool_name not in exposed_names:
+                    raise ValueError(f"Tool {req.tool_name!r} is not exposed by this shared runtime")
+                call.check()
+                yield
+            finally:
+                with self._mcp_runtimes_lock:
+                    runtime.current_call = None
+                runtime.binding_lock.release()
+
     def _call_mcp_tool(self, req: MCPToolCallRequest) -> str:
-        runtime = self._get_mcp_runtime(req.project_root, req.context)
+        call = self._mcp_calls.register(req.session_id, req.request_id, req.deadline)
         if req.tool_name == "activate_project":
             raise ValueError("activate_project is disabled for shared MCP runtimes; project routing is bridge-controlled")
+        runtime = self._get_mcp_runtime(req.project_root, req.context)
+        call.check()
 
-        # Serialize the binding check with the complete call. This prevents a second
-        # request from observing a temporary external-project context and "repairing"
-        # the runtime underneath the first request.
-        with runtime.binding_lock:
-            self._ensure_mcp_runtime_binding(runtime)
-
-            exposed_names = {tool.get_name() for tool in runtime.agent.get_exposed_tool_instances()}
-            if req.tool_name not in exposed_names:
-                raise ValueError(f"Tool {req.tool_name!r} is not exposed by this shared runtime")
-
+        with self._mcp_runtime_use(runtime, admit=True):
+            # fail promptly while interrupted work is still draining; never restart a runtime underneath an edit
             with self._mcp_runtimes_lock:
-                runtime.active_calls += 1
+                current = runtime.current_call
+                if current is not None and current.interrupted and current.running:
+                    raise ToolCallBusyError(
+                        f"Shared runtime is still finishing interrupted call {current.request_id}; "
+                        "the new operation was not submitted. Verify changes before retrying."
+                    )
                 now = time.monotonic()
                 runtime.bridge_sessions[req.session_id] = now
                 runtime.last_access = now
-            try:
-                tool = runtime.agent.get_tool_by_name(req.tool_name)
+            tool = runtime.agent.get_tool_by_name(req.tool_name)
+            call_context = ToolCallContext(call, self._mcp_call_guard(runtime, req, call))
+            with call_context.activate():
                 return tool.apply_ex(
                     catch_exceptions=False,
                     session_id_override=req.session_id,
                     **req.arguments,
                 )
-            finally:
-                with self._mcp_runtimes_lock:
-                    runtime.active_calls -= 1
-                    runtime.last_access = time.monotonic()
 
     def _evict_mcp_runtimes(self) -> None:
         now = time.monotonic()
@@ -578,7 +642,7 @@ class ProjectServerClient:
         if port is None:
             port = ProjectServer.PORT
         self._base_url = f"http://{host}:{port}"
-        self._timeout = serena_config.tool_timeout - 1
+        self._timeout = max(float(serena_config.tool_timeout), 1.0) + ToolCall.RESPONSE_GRACE_SECONDS
         auth_secret = serena_config.auth_secret
         self._headers = {"Authorization": f"Bearer {auth_secret}"}
 

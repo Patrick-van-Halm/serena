@@ -31,6 +31,7 @@ from serena.constants import DEFAULT_CONTEXT, SERENA_LOG_FORMAT
 from serena.tools import Tool, ToolCallError
 from serena.util.exception import show_fatal_exception_safe
 from serena.util.logging import MemoryLogHandler
+from serena.util.tool_call import AsyncToolCallRunner
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ class SerenaFastMCPTool(FastMCPTool):
         func_name = tool.get_name()
         func_doc = tool.get_apply_docstring() or ""
         func_arg_metadata = tool.get_apply_fn_metadata(structured_output=structured_output)
-        is_async = False
+        is_async = True
         parameters = func_arg_metadata.arg_model.model_json_schema()
         if openai_tool_compatible:
             parameters = SerenaMCPFactory._sanitize_for_openai_tools(parameters)
@@ -96,9 +97,12 @@ class SerenaFastMCPTool(FastMCPTool):
                 param_desc = f"{param_doc.description.strip().strip('.') + '.'}"
                 properties["description"] = param_desc[0].upper() + param_desc[1:]
 
-        def execute_fn(**kwargs) -> str:
+        async def execute_fn(**kwargs) -> str:
             try:
-                return tool.apply_ex(log_call=True, catch_exceptions=False, **kwargs)
+                return await AsyncToolCallRunner.run(
+                    lambda: tool.apply_ex(log_call=True, catch_exceptions=False, **kwargs),
+                    timeout=float(tool.agent.serena_config.tool_timeout),
+                )
             except ToolCallError as e:
                 raise ToolError(e.get_error_message()) from e
 

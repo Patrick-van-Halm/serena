@@ -25,6 +25,7 @@ from serena.repl.facade import SUCCESS_RESULT
 from serena.util.class_decorators import singleton
 from serena.util.inspection import iter_subclasses
 from serena.util.text_utils import TextOutputUtils
+from serena.util.tool_call import ToolCall, ToolCallContext, ToolCallInterrupted
 from solidlsp.ls_exceptions import SolidLSPException
 
 if TYPE_CHECKING:
@@ -387,15 +388,17 @@ class Tool(Component):
 
                 def execute_apply() -> str:
                     try:
+                        call_context.call.check()
                         return apply_fn(**apply_kwargs)
                     except SolidLSPException as e:
-                        if e.is_language_server_terminated():
+                        if e.is_language_server_terminated() and self.is_readonly():
                             affected_language = e.get_affected_language()
                             if affected_language is not None:
                                 log.error(
                                     f"Language server terminated while executing tool ({e}). Restarting the language server and retrying ..."
                                 )
                                 self.agent.get_language_server_manager_or_raise().restart_language_server(affected_language)
+                                call_context.call.check()
                                 return apply_fn(**apply_kwargs)
                             log.error(
                                 f"Language server terminated while executing tool ({e}), but affected language is unknown. Not retrying."
@@ -432,13 +435,20 @@ class Tool(Component):
 
             return result
 
-        # execute the tool in the agent's task executor, with timeout
-        # (task timeout bounds task execution in the dispatcher once it runs, result timeout limits the time we wait)
+        # carry the caller's deadline and guard into the actual worker, including queue time
         tool_call_error: ToolCallError
         timeout = self.agent.serena_config.tool_timeout
+        call_context = ToolCallContext.current() or ToolCallContext(ToolCall(float(timeout)))
         try:
-            task_exec = self.agent.issue_task(task, name=self.__class__.__name__, timeout=timeout)
-            return task_exec.result(timeout=timeout)
+            call_context.call.check()
+            task_exec = self.agent.issue_task(
+                lambda: call_context.execute(task),
+                name=self.__class__.__name__,
+                timeout=call_context.call.remaining,
+            )
+            return call_context.call.wait(task_exec.future)
+        except ToolCallInterrupted as e:
+            tool_call_error = ToolCallError(str(e))
         except ToolCallError as e:
             tool_call_error = e
         except TimeoutError:

@@ -14,6 +14,8 @@ from typing import IO, Any, AnyStr
 
 from sensai.util.string import ToStringMixin
 
+from serena.util.tool_call import ToolCallContext
+
 from solidlsp.ls_config import LanguageServerIdLike
 from solidlsp.ls_exceptions import SolidLSPException
 from solidlsp.ls_request import LanguageServerRequest
@@ -103,6 +105,9 @@ class Request(ToStringMixin):
 
     def get_result(self, timeout: float | None = None) -> Result:
         try:
+            call_context = ToolCallContext.current()
+            if call_context is not None:
+                return call_context.call.wait_queue(self._result_queue, timeout)
             return self._result_queue.get(timeout=timeout)
         except Empty as e:
             if timeout is not None:
@@ -340,6 +345,11 @@ class LanguageServerInterface(ABC):
         """
         Sends a single request to the server (no retries) and waits for its response.
         """
+        # reject expired or cancelled tool work before dispatching another language-server request
+        call_context = ToolCallContext.current()
+        if call_context is not None:
+            call_context.call.check()
+
         with self._request_id_lock:
             request_id = self.request_id
             self.request_id += 1

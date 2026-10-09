@@ -39,9 +39,9 @@ prompts:
     
     Line numbers returned by Serena's tools are 0-based!
 
-    Serena executes tool calls one at a time internally, even when you request several at once. Independent operations
-    can therefore be issued together in a single turn; they are applied in the order issued and cannot race with or corrupt
-    one another. Only call tools sequentially when one genuinely depends on the result of another.
+    Calls sharing a Serena project runtime execute serially. Keep batches of independent reads small;
+    use sequential calls for edits and for operations that depend on earlier results. A timeout does not
+    prove that a running operation stopped. Check the resulting state before repeating a modifying operation.
     
     The context and modes of operation are described below. These determine how to interact with your user
     and which kinds of interactions are expected of you.

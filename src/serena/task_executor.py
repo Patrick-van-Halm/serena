@@ -2,6 +2,7 @@
 
 import concurrent.futures
 import threading
+import weakref
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -246,6 +247,28 @@ class TaskExecutor:
                 log.info(f"Scheduling {task_name}")
             task_obj = self.Task(function=task, name=task_name, logged=logged, timeout=timeout)
             self._task_executor_queue.append(task_obj)
+
+            # discard cancelled queued closures even when the running worker cannot finish
+            executor_ref = weakref.ref(self)
+            task_ref = weakref.ref(task_obj)
+
+            def release_cancelled_task(future: Future) -> None:
+                if not future.cancelled():
+                    return
+                executor = executor_ref()
+                queued_task = task_ref()
+                if executor is None or queued_task is None:
+                    return
+                with executor._task_executor_lock:
+                    try:
+                        executor._task_executor_queue.remove(queued_task)
+                    except ValueError:
+                        # dispatched work retains its execution guard until its real thread exits
+                        return
+                    queued_task._function = None
+                    queued_task._finished_event.set()
+
+            task_obj.future.add_done_callback(release_cancelled_task)
 
             # start a dispatcher only when needed, publishing it under the same lock used for retirement
             if self._task_executor_thread is None:
