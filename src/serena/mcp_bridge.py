@@ -2,19 +2,13 @@
 
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-import os
 import secrets
-import shutil
-import subprocess
-import sys
 import threading
-import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
 
 import docstring_parser
-from filelock import FileLock
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.fastmcp.server import Context, FastMCP, Settings
 from mcp.server.fastmcp.tools.base import Tool as FastMCPTool
@@ -24,8 +18,10 @@ from sensai.util import logging
 
 from serena import __version__
 from serena.config.context_mode import SerenaAgentContext
-from serena.config.serena_config import SerenaConfig, SerenaPaths, project_root_key, project_roots_equal
-from serena.shared_mcp_client import IncompatibleSharedMCPDaemonError, SharedMCPDaemonClient
+from serena.config.serena_config import SerenaConfig, project_root_key, project_roots_equal
+from serena.project_server_endpoint import ProjectServerEndpointError
+from serena.shared_mcp_client import SharedMCPDaemonClient
+from serena.shared_mcp_daemon import SharedMCPDaemon
 from serena.tools import Tool, ToolCallError, ToolRegistry
 from serena.util.tool_call import AsyncToolCallRunner, ToolCall, ToolCallCancellationHandler
 
@@ -188,112 +184,6 @@ class BridgeFastMCPTool(FastMCPTool):
         return await super().run(arguments, context, convert_result)
 
 
-def _daemon_command() -> list[str]:
-    executable = shutil.which("serena") or shutil.which("serena-agent")
-    if executable is not None:
-        return [executable, "start-project-server", "--log-level", "WARNING"]
-    # Fallback for editable/dev installs where the console script is not on PATH.
-    return [
-        sys.executable,
-        "-c",
-        "from serena.cli import top_level; top_level()",
-        "start-project-server",
-        "--log-level",
-        "WARNING",
-    ]
-
-
-def _spawn_shared_daemon() -> subprocess.Popen:
-    kwargs: dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
-        "close_fds": True,
-        "env": os.environ.copy(),
-    }
-    if os.name == "nt":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-    else:
-        kwargs["start_new_session"] = True
-    return subprocess.Popen(_daemon_command(), **kwargs)
-
-
-def _find_project_server_pid() -> int | None:
-    """Find the process listening on Serena's project-server port, only when it is clearly Serena."""
-    try:
-        import psutil
-
-        from serena.constants import SerenaPorts
-
-        for connection in psutil.net_connections(kind="tcp"):
-            if connection.pid is None or connection.status != psutil.CONN_LISTEN:
-                continue
-            if not connection.laddr or connection.laddr.port != SerenaPorts.PROJECT_SERVER_PORT:
-                continue
-            try:
-                process = psutil.Process(connection.pid)
-                command = " ".join(process.cmdline())
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-            if "serena" in command and "start-project-server" in command:
-                return connection.pid
-    except Exception as e:
-        log.debug("Unable to discover stale shared daemon by port: %s", e)
-    return None
-
-
-def _terminate_stale_daemon(pid: int | None) -> None:
-    """
-    Terminate a stale daemon and its independent language-server descendants.
-
-    SolidLSP intentionally launches LSP processes in their own sessions, so killing only
-    the daemon can orphan several GB of language-server processes. Capture and terminate
-    the full descendant tree first.
-    """
-    if pid is None:
-        pid = _find_project_server_pid()
-    if pid is None:
-        raise ConnectionError("Found an incompatible shared Serena daemon but could not identify its process")
-
-    import psutil
-
-    try:
-        process = psutil.Process(pid)
-        command = " ".join(process.cmdline())
-    except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
-        raise ConnectionError(f"Could not inspect incompatible Serena daemon pid={pid}") from e
-
-    if "serena" not in command or "start-project-server" not in command:
-        raise ConnectionError(
-            f"Refusing to terminate pid={pid}: process is not recognisably a Serena project server ({command!r})"
-        )
-
-    descendants = process.children(recursive=True)
-    log.info(
-        "Replacing stale shared Serena daemon pid=%s with %d descendant process(es)",
-        pid,
-        len(descendants),
-    )
-    for child in reversed(descendants):
-        try:
-            child.terminate()
-        except psutil.NoSuchProcess:
-            pass
-    try:
-        process.terminate()
-    except psutil.NoSuchProcess:
-        pass
-
-    _, alive = psutil.wait_procs([*descendants, process], timeout=5.0)
-    for remaining in alive:
-        try:
-            remaining.kill()
-        except psutil.NoSuchProcess:
-            pass
-    if alive:
-        psutil.wait_procs(alive, timeout=2.0)
-
-
 def _validate_runtime_project_root(requested_root: str, runtime_root: str) -> str:
     requested_path = Path(requested_root).expanduser().resolve()
     runtime_path = Path(runtime_root).expanduser().resolve()
@@ -306,48 +196,8 @@ def _validate_runtime_project_root(requested_root: str, runtime_root: str) -> st
 
 
 def ensure_shared_daemon(serena_config: SerenaConfig, startup_timeout: float = 30.0) -> SharedMCPDaemonClient:
-    """Return the singleton daemon client, starting the daemon if necessary."""
-    try:
-        return SharedMCPDaemonClient(serena_config)
-    except (ConnectionError, IncompatibleSharedMCPDaemonError):
-        pass
-
-    home = Path(SerenaPaths().serena_user_home_dir)
-    home.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(str(home / "shared-mcp-daemon.lock"), timeout=startup_timeout)
-
-    with lock:
-        # Another bridge may have completed startup while this process waited.
-        try:
-            return SharedMCPDaemonClient(serena_config)
-        except IncompatibleSharedMCPDaemonError as e:
-            _terminate_stale_daemon(e.pid)
-        except ConnectionError:
-            pass
-
-        process = _spawn_shared_daemon()
-        try:
-            deadline = time.monotonic() + startup_timeout
-            last_error: Exception | None = None
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    raise ConnectionError(f"Shared Serena daemon exited during startup with code {process.returncode}")
-                try:
-                    return SharedMCPDaemonClient(serena_config)
-                except ConnectionError as e:
-                    last_error = e
-                    time.sleep(0.1)
-
-            raise ConnectionError(f"Shared Serena daemon did not become ready within {startup_timeout:.1f}s: {last_error}")
-        except BaseException:
-            # clean up only this startup's child before releasing the lock, including on interruption
-            try:
-                if process.poll() is None:
-                    _terminate_stale_daemon(process.pid)
-                process.wait(timeout=2.0)
-            except Exception:
-                log.exception("Failed to clean up shared Serena daemon startup pid=%s", process.pid)
-            raise
+    """Connect to the configured endpoint, starting only an absent or verified stale daemon."""
+    return SharedMCPDaemon(serena_config).ensure_running(startup_timeout)
 
 
 class SerenaMCPBridge:
@@ -503,6 +353,8 @@ class SerenaMCPBridge:
                         session_id=self.session_id,
                     )
                     self.client = client
+                except ProjectServerEndpointError as reconnect_error:
+                    log.error("Shared MCP daemon endpoint/configuration error: %s", reconnect_error)
                 except Exception as reconnect_error:
                     log.debug("Shared MCP bridge reconnect failed: %s", reconnect_error)
 

@@ -1,24 +1,16 @@
-import threading
-
-import pytest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+import pytest
 
 from serena.config.context_mode import SerenaAgentContext
 from serena.mcp_bridge import (
     BridgeFastMCPTool,
     SerenaMCPBridge,
     _BridgeAgent,
-    _daemon_command,
-    _terminate_stale_daemon,
     _validate_runtime_project_root,
 )
 from serena.tools import ToolRegistry
-
-
-def test_daemon_command_targets_project_server() -> None:
-    command = _daemon_command()
-    assert "start-project-server" in command
 
 
 def test_proxy_tool_forwards_to_shared_runtime() -> None:
@@ -62,7 +54,6 @@ def test_proxy_tool_preserves_original_tool_name_and_schema_source() -> None:
     )
 
 
-
 def test_bridge_fast_mcp_tool_preserves_search_schema() -> None:
     context = SerenaAgentContext.from_name("codex")
     original = ToolRegistry().get_tool_class_by_name("search_for_pattern")
@@ -80,9 +71,6 @@ def test_bridge_fast_mcp_tool_preserves_search_schema() -> None:
     assert mcp_tool.name == "search_for_pattern"
     assert "substring_pattern" in mcp_tool.parameters["properties"]
     assert "relative_path" in mcp_tool.parameters["properties"]
-
-
-
 
 
 def test_bridge_heartbeat_does_not_self_exit_when_idle() -> None:
@@ -110,7 +98,6 @@ def test_bridge_heartbeat_does_not_self_exit_when_idle() -> None:
     )
 
 
-
 def test_bridge_runtime_root_validation_rejects_other_worktree(tmp_path) -> None:
     requested = tmp_path / "worktree-a"
     other = tmp_path / "worktree-b"
@@ -126,7 +113,6 @@ def test_bridge_runtime_root_validation_accepts_same_worktree(tmp_path) -> None:
     root.mkdir()
 
     assert _validate_runtime_project_root(str(root), str(root)) == str(root.resolve())
-
 
 
 def test_bridge_project_id_uses_root_not_display_name(tmp_path) -> None:

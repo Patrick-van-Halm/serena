@@ -20,6 +20,7 @@ from sensai.util.logging import LogTime
 
 from serena.config.serena_config import LanguageBackend, SerenaConfig, project_root_key, project_roots_equal
 from serena.constants import SerenaPorts
+from serena.project_server_endpoint import ProjectServerEndpoint
 from serena.shared_mcp_calls import DuplicateToolCallError, SharedMCPCalls
 from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_build_id
 from serena.util.tool_call import ToolCall, ToolCallBusyError, ToolCallContext, ToolCallInterrupted
@@ -139,12 +140,11 @@ class ProjectServer:
     def __init__(self, host: str = "127.0.0.1", port: int | None = None) -> None:
         """
         :param host: the host address to listen on.
-        :param port: the port to listen on; if None, use default
+        :param port: explicit port override; otherwise resolve the environment and global configuration
         """
-        if port is None:
-            port = self.PORT
-
         serena_config = SerenaConfig.from_config_file().with_headless_mode_overrides()
+        endpoint = ProjectServerEndpoint.from_config(serena_config, host, port)
+        log.info("Project server endpoint: %s", endpoint.base_url)
         serena_config.language_backend = LanguageBackend.LSP
 
         self._serena_config = serena_config
@@ -163,12 +163,12 @@ class ProjectServer:
         self._mcp_runtime_stop_event = threading.Event()
         self._mcp_calls = SharedMCPCalls(float(serena_config.tool_timeout))
 
-        self._port = port
-        self._host = host
+        self._port = endpoint.port
+        self._host = endpoint.host
 
         # create the Flask application, limiting trusted hosts for the case where the server is running on localhost
         self._app = Flask(__name__)
-        local_hosts = ["localhost", "127.0.0.1"]
+        local_hosts = ["localhost", "127.0.0.1", "::1", "[::1]"]
         if self._host in local_hosts:
             self._app.config["TRUSTED_HOSTS"] = local_hosts
 
@@ -635,25 +635,18 @@ class ProjectServerClient:
     def __init__(self, serena_config: SerenaConfig, host: str = "127.0.0.1", port: int | None = None) -> None:
         """
         :param host: the host address of the project server.
-        :param port: the port of the project server; if None, use default.
-        :param auth_secret: the shared authentication secret; defaults to the secret in Serena's configuration.
+        :param port: explicit port override; otherwise resolve the environment and global configuration.
+        :param serena_config: global configuration providing the endpoint, timeout, and authentication secret.
         :raises ConnectionError: if the project server is not reachable.
         """
-        if port is None:
-            port = ProjectServer.PORT
-        self._base_url = f"http://{host}:{port}"
+        self._endpoint = ProjectServerEndpoint.from_config(serena_config, host, port)
+        self._base_url = self._endpoint.base_url
         self._timeout = max(float(serena_config.tool_timeout), 1.0) + ToolCall.RESPONSE_GRACE_SECONDS
         auth_secret = serena_config.auth_secret
         self._headers = {"Authorization": f"Bearer {auth_secret}"}
 
-        # verify that the server is running
-        try:
-            response = requests_lib.get(f"{self._base_url}/heartbeat", headers=self._headers, timeout=5)
-            response.raise_for_status()
-        except requests_lib.ConnectionError:
-            raise ConnectionError(f"ProjectServer is not reachable at {self._base_url}. Make sure the server is running.")
-        except requests_lib.RequestException as e:
-            raise ConnectionError(f"ProjectServer health check failed: {e}")
+        # distinguish authentication/configuration rejection from connection refusal
+        self._endpoint.heartbeat(auth_secret)
 
     def get_mcp_runtime_info(self, project_root: str, context: str, session_id: str | None = None) -> MCPRuntimeInfoResponse:
         payload = MCPRuntimeInfoRequest(project_root=project_root, context=context, session_id=session_id).model_dump()
@@ -663,6 +656,7 @@ class ProjectServerClient:
             headers=self._headers,
             timeout=self._timeout,
         )
+        self._endpoint.check_authentication(response)
         if not response.ok:
             raise ValueError(f"Shared MCP daemon error ({response.status_code}): {response.text[:2000]}")
         return MCPRuntimeInfoResponse.model_validate_json(response.text)
@@ -675,6 +669,7 @@ class ProjectServerClient:
             headers=self._headers,
             timeout=5,
         )
+        self._endpoint.check_authentication(response)
         response.raise_for_status()
 
     def close_mcp_bridge(self, project_root: str, context: str, session_id: str) -> None:
@@ -711,6 +706,7 @@ class ProjectServerClient:
             headers=self._headers,
             timeout=self._timeout,
         )
+        self._endpoint.check_authentication(response)
         if not response.ok:
             raise ValueError(f"Shared MCP daemon error ({response.status_code}): {response.text[:2000]}")
         return response.text
@@ -734,6 +730,7 @@ class ProjectServerClient:
         ).model_dump()
 
         response = requests_lib.post(f"{self._base_url}/query_project", json=payload, headers=self._headers, timeout=self._timeout)
+        self._endpoint.check_authentication(response)
         response.raise_for_status()
         return response.text
 
@@ -752,6 +749,7 @@ class ProjectServerClient:
             project_name=project_name, facade_name=facade_name, method_name=method_name, args=args, kwargs=kwargs
         ).model_dump()
         response = requests_lib.post(f"{self._base_url}/call_facade_method", json=payload, headers=self._headers, timeout=self._timeout)
+        self._endpoint.check_authentication(response)
         if not response.ok:
             raise ValueError(f"Project server error ({response.status_code}): {response.text[:2000]}")
         return pickle.loads(response.content)

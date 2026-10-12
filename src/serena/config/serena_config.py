@@ -34,7 +34,9 @@ from serena.constants import (
     SERENA_CONFIG_TEMPLATE_FILE,
     SERENA_FILE_ENCODING,
     SERENA_MANAGED_DIR_NAME,
+    SerenaPorts,
 )
+from serena.project_server_endpoint import ProjectServerEndpoint
 from serena.util.inspection import compute_language_server_support_composition
 from serena.util.text_utils import GlobMatcher
 from serena.util.yaml import YamlCommentNormalisation, load_yaml, normalise_yaml_comments, save_yaml, transfer_yaml_comments
@@ -963,6 +965,11 @@ class SerenaConfig(SharedConfig, ModeSelectionDefinitionWithBaseModes):
     # *** fields that are mapped directly to/from the configuration file (DO NOT RENAME) ***
 
     projects: list[RegisteredProject] = field(default_factory=list)
+    project_server_port: int = SerenaPorts.PROJECT_SERVER_PORT
+    """
+    Host-global project daemon port, never overridden by project.yml.
+    SERENA_PROJECT_SERVER_PORT overrides it transiently; an explicit port takes precedence.
+    """
     auth_secret: str = field(default_factory=lambda: str(uuid4()), repr=False)
     """
     shared secret for authenticating communication between Serena components and services.
@@ -1205,6 +1212,9 @@ class SerenaConfig(SharedConfig, ModeSelectionDefinitionWithBaseModes):
         for field_name in instance._iter_config_file_mapped_fields_without_type_conversion():
             assert hasattr(instance, field_name)
             setattr(instance, field_name, get_value_or_default(field_name))
+
+        # validate the stored setting without persisting environment overrides
+        ProjectServerEndpoint.validate_port(instance.project_server_port, f"project_server_port in {config_file_path}")
 
         # generate a persistent authentication secret for explicitly unset settings
         if not instance.auth_secret:

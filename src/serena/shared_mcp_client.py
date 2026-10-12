@@ -5,14 +5,16 @@
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 
-from serena.config.serena_config import SerenaConfig
-from serena.constants import SerenaPorts
+from serena.project_server_endpoint import ProjectServerEndpoint, ProjectServerEndpointError
 from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_build_id
 from serena.util.tool_call import ToolCall, ToolCallContext
+
+if TYPE_CHECKING:
+    from serena.config.serena_config import SerenaConfig
 
 log = logging.getLogger(__name__)
 
@@ -50,35 +52,32 @@ class SharedMCPDaemonClient:
     per-conversation stdio bridge substantially lighter than the long-lived daemon.
     """
 
-    def __init__(self, serena_config: SerenaConfig, host: str = "127.0.0.1", port: int = SerenaPorts.PROJECT_SERVER_PORT) -> None:
-        self._base_url = f"http://{host}:{port}"
+    def __init__(
+        self,
+        serena_config: "SerenaConfig",
+        host: str = "127.0.0.1",
+        port: int | None = None,
+        *,
+        heartbeat_timeout: float = 5.0,
+    ) -> None:
+        self._endpoint = ProjectServerEndpoint.from_config(serena_config, host, port)
+        self._base_url = self._endpoint.base_url
         self._tool_timeout = max(float(serena_config.tool_timeout), 1.0)
         self._timeout = self._tool_timeout + ToolCall.RESPONSE_GRACE_SECONDS
         self._headers = {"Authorization": f"Bearer {serena_config.auth_secret}"}
 
-        try:
-            response = requests.get(f"{self._base_url}/heartbeat", headers=self._headers, timeout=5)
-            response.raise_for_status()
-        except requests.ConnectionError as e:
-            raise ConnectionError(f"Shared Serena daemon is not reachable at {self._base_url}") from e
-        except requests.RequestException as e:
-            raise ConnectionError(f"Shared Serena daemon health check failed: {e}") from e
-
-        try:
-            heartbeat = response.json()
-        except ValueError as e:
-            raise IncompatibleSharedMCPDaemonError(
-                "Shared Serena daemon returned an invalid heartbeat payload"
-            ) from e
+        # a responding endpoint is never treated as an absent daemon
+        heartbeat = self._endpoint.heartbeat(serena_config.auth_secret, timeout=heartbeat_timeout)
 
         server_protocol = heartbeat.get("shared_mcp_protocol_version")
         server_build_id = heartbeat.get("shared_mcp_build_id")
         server_pid = heartbeat.get("pid")
-        pid = server_pid if isinstance(server_pid, int) else None
+        pid = server_pid if type(server_pid) is int and server_pid > 0 else None
+        self.pid = pid
         expected_build_id = shared_mcp_build_id()
         if server_protocol != SHARED_MCP_PROTOCOL_VERSION or server_build_id != expected_build_id:
             raise IncompatibleSharedMCPDaemonError(
-                "Shared Serena daemon is stale/incompatible "
+                f"Shared Serena daemon at {self._base_url} is stale/incompatible "
                 f"(protocol={server_protocol!r}, build={server_build_id!r}; "
                 f"expected protocol={SHARED_MCP_PROTOCOL_VERSION}, build={expected_build_id})",
                 pid=pid,
@@ -93,6 +92,7 @@ class SharedMCPDaemonClient:
             headers=self._headers,
             timeout=self._timeout,
         )
+        self._endpoint.check_authentication(response)
         if not response.ok:
             raise ValueError(f"Shared MCP daemon error ({response.status_code}): {response.text[:2000]}")
         data = response.json()
@@ -112,6 +112,7 @@ class SharedMCPDaemonClient:
             headers=self._headers,
             timeout=5,
         )
+        self._endpoint.check_authentication(response)
         response.raise_for_status()
 
     def close_bridge(self, project_root: str, context: str, session_id: str) -> None:
@@ -134,6 +135,7 @@ class SharedMCPDaemonClient:
             headers=self._headers,
             timeout=(1.0, 1.0),
         )
+        self._endpoint.check_authentication(response)
         response.raise_for_status()
 
     def call_tool(
@@ -170,12 +172,13 @@ class SharedMCPDaemonClient:
             call.cancel()
             try:
                 self.cancel_tool_call(session_id, call.request_id)
-            except requests.RequestException:
+            except (requests.RequestException, ProjectServerEndpointError):
                 log.warning("Cancellation delivery failed for %s; outcome unknown", call.request_id, exc_info=True)
             raise ConnectionError(
                 f"Shared MCP transport failed for tool call {call.request_id}; outcome=unknown. "
                 "Verify changes before retrying; the operation may still be running."
             ) from e
+        self._endpoint.check_authentication(response)
         if not response.ok:
             raise ValueError(f"Shared MCP daemon error ({response.status_code}): {response.text[:2000]}")
         return response.text
