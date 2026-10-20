@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +19,7 @@ from filelock import FileLock, Timeout
 
 from serena.project_server_endpoint import ProjectServerEndpoint, ProjectServerEndpointError, ProjectServerUnavailableError
 from serena.shared_mcp_client import IncompatibleSharedMCPDaemonError, SharedMCPDaemonClient
+from serena.shared_mcp_recovery import DaemonRecovery, DaemonRecoveryRefusedError, RecoveryScope
 
 if TYPE_CHECKING:
     from serena.config.serena_config import SerenaConfig
@@ -54,31 +57,113 @@ class SharedMCPDaemon:
         may be replaced; ownership is verified against the resolved endpoint.
         """
         # budget lock contention and readiness checks together
-        if not math.isfinite(startup_timeout) or startup_timeout <= 0:
-            raise ValueError("startup_timeout must be finite and positive")
-        deadline = time.monotonic() + startup_timeout
+        deadline = self._startup_deadline(startup_timeout)
         try:
             return self._connect(deadline)
         except (ProjectServerUnavailableError, IncompatibleSharedMCPDaemonError):
             pass
 
-        # serialize startup for this endpoint without blocking another port
+        with self._startup_lock(deadline):
+            try:
+                return self._connect(deadline)
+            except IncompatibleSharedMCPDaemonError as error:
+                self._stop_daemon(error.pid)
+            except ProjectServerUnavailableError:
+                pass
+            self._remaining(deadline)
+            return self._start_and_wait(deadline)
+
+    def restart(self, startup_timeout: float = 30.0) -> SharedMCPDaemonClient:
+        """
+        Restart the selected local daemon, starting it if no listener is running.
+
+        The endpoint lock covers authentication, verified shutdown, and startup. A
+        compatible daemon is stopped too, but authentication and ownership checks are
+        never bypassed. Running tool calls are interrupted and in-memory sessions lost;
+        client-owned MCP bridges are not restarted.
+
+        :param startup_timeout: time allowance for lock acquisition and startup, in seconds.
+            Process termination and failed-start cleanup have separate bounded waits.
+        :return: client for the ready replacement daemon.
+        """
+        # serialize the entire restart with bridge startup and other restart commands
+        deadline = self._startup_deadline(startup_timeout)
+        with self._startup_lock(deadline):
+            try:
+                client = self._connect(deadline)
+            except ProjectServerUnavailableError:
+                log.info("No shared Serena daemon running at %s; starting one", self._endpoint.base_url)
+            except IncompatibleSharedMCPDaemonError as error:
+                self._stop_daemon(error.pid)
+            else:
+                self._stop_daemon(client.pid)
+            self._remaining(deadline)
+            return self._start_and_wait(deadline)
+
+    def recover_blocked(self, scope: RecoveryScope, startup_timeout: float = 30.0) -> SharedMCPDaemonClient:
+        """Restart only after the daemon twice verifies a stranded, caller-owned retrieval.
+
+        An unavailable or unresponsive control endpoint is insufficient evidence. This
+        path cannot restart an incompatible daemon, bypass authentication, or interrupt
+        edits, shell/REPL calls, other sessions, or work in another project.
+        """
+        deadline = self._startup_deadline(startup_timeout)
+        with self._startup_lock(deadline):
+            # authenticate and verify ownership before asking the daemon to close admission
+            client = self._connect(deadline)
+            if client.pid is None:
+                raise DaemonRecoveryRefusedError("The daemon did not provide a verifiable process identity.")
+            process = self._owned_listener(client.pid)
+            observation = client.recovery_request("observe", scope, timeout=min(5.0, self._remaining(deadline)))
+            request_id = observation.get("request_id")
+            if observation.get("state") != "observed" or not isinstance(request_id, str) or not request_id:
+                raise DaemonRecoveryRefusedError("No positive daemon-side evidence of a blocked call was returned.")
+            time.sleep(min(DaemonRecovery.OBSERVATION_SECONDS, self._remaining(deadline)))
+            claim = client.recovery_request("claim", scope, request_id=request_id, timeout=min(5.0, self._remaining(deadline)))
+            token = claim.get("token")
+            if claim.get("state") != "claimed" or claim.get("request_id") != request_id or not isinstance(token, str) or not token:
+                raise DaemonRecoveryRefusedError("The daemon did not authorize recovery of the observed call.")
+            try:
+                # retain the original psutil identity and recheck the selected socket before signalling
+                self._remaining(deadline)
+                verified = self._owned_listener(client.pid)
+                if not process.is_running() or verified.create_time() != process.create_time():
+                    raise DaemonRecoveryRefusedError("The daemon process changed before recovery; no process was terminated.")
+                self._remaining(deadline)
+                log.warning(
+                    "Recovering daemon %s at %s after verified blocked retrieval %s",
+                    client.pid,
+                    self._endpoint.base_url,
+                    request_id,
+                )
+                self._terminate_tree(process)
+                self._remaining(deadline)
+                return self._start_and_wait(deadline)
+            finally:
+                # release only our token if shutdown failed; expiry also protects against a crashed bridge
+                try:
+                    client.recovery_request("release", scope, token=token, timeout=1.0)
+                except Exception:
+                    log.debug("Recovery lease release was not acknowledged", exc_info=True)
+
+    @staticmethod
+    def _startup_deadline(startup_timeout: float) -> float:
+        if not math.isfinite(startup_timeout) or startup_timeout <= 0:
+            raise ValueError("startup_timeout must be finite and positive")
+        return time.monotonic() + startup_timeout
+
+    @contextmanager
+    def _startup_lock(self, deadline: float) -> Iterator[None]:
+        # use the same endpoint lock for startup and explicit restart
         if not self._endpoint.is_loopback:
             raise ProjectServerEndpointError(
-                f"Automatic daemon startup/replacement requires a loopback endpoint: {self._endpoint.base_url}"
+                f"Daemon startup/restart requires a loopback endpoint: {self._endpoint.base_url}"
             )
         self._home.mkdir(parents=True, exist_ok=True)
         lock = FileLock(str(self._endpoint.startup_lock_path(self._home)), timeout=self._remaining(deadline))
         try:
             with lock:
-                try:
-                    return self._connect(deadline)
-                except IncompatibleSharedMCPDaemonError as error:
-                    self._replace_stale_daemon(error.pid)
-                except ProjectServerUnavailableError:
-                    pass
-                self._remaining(deadline)
-                return self._start_and_wait(deadline)
+                yield
         except Timeout as error:
             raise ProjectServerStartupError(f"Timed out waiting for the startup lock for {self._endpoint.base_url}") from error
 
@@ -233,7 +318,7 @@ class SharedMCPDaemon:
                 f"Cannot verify ownership of daemon pid={pid} at {self._endpoint.base_url}: {error}"
             ) from error
 
-    def _replace_stale_daemon(self, pid: int | None) -> None:
+    def _stop_daemon(self, pid: int | None) -> None:
         # discover only this endpoint when an authenticated legacy heartbeat omits its PID
         if pid is None:
             try:
@@ -253,7 +338,7 @@ class SharedMCPDaemon:
                 )
             pid = candidates.pop()
         process = self._owned_listener(pid)
-        log.info("Replacing incompatible Serena daemon pid=%s at %s", pid, self._endpoint.base_url)
+        log.info("Stopping verified Serena daemon pid=%s at %s", pid, self._endpoint.base_url)
         self._terminate_tree(process)
 
     @staticmethod

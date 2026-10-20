@@ -67,6 +67,11 @@ class ToolCall:
         return max(0.0, self._deadline - time.monotonic())
 
     @property
+    def overdue_seconds(self) -> float:
+        """Elapsed time beyond the immutable deadline, independently of cancellation."""
+        return max(0.0, time.monotonic() - self._deadline)
+
+    @property
     def interrupted(self) -> bool:
         with self._lock:
             return self._cancelled or self.remaining == 0

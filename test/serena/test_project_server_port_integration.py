@@ -10,6 +10,7 @@ from serena.config.serena_config import SerenaConfig
 from serena.project_server import ProjectServer, ProjectServerClient
 from serena.project_server_endpoint import ProjectServerAuthenticationError
 from serena.shared_mcp_client import SharedMCPDaemonClient
+from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION
 
 
 @pytest.fixture
@@ -23,7 +24,7 @@ def endpoint_server(monkeypatch):
             self.end_headers()
             self.wfile.write(json.dumps({
                 "status": "alive", "pid": 1234,
-                "shared_mcp_protocol_version": 4, "shared_mcp_build_id": "test-build",
+                "shared_mcp_protocol_version": SHARED_MCP_PROTOCOL_VERSION, "shared_mcp_build_id": "test-build",
             }).encode())
 
         def do_POST(self):

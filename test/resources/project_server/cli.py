@@ -11,6 +11,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
+from serena.shared_mcp_recovery import DaemonRecovery, DaemonRecoveryRefusedError, RecoveryEvidence, RecoveryScope
+
+
 def top_level() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["start-project-server"])
@@ -32,9 +35,56 @@ def top_level() -> None:
         time.sleep(60)
     time.sleep(float(os.getenv("DAEMON_TEST_DELAY", "0")))
 
+    class Source:
+        completed = False
+
+        def get_recovery_evidence(self, scope):
+            if scope.session_id != "chat":
+                raise DaemonRecoveryRefusedError("Wrong session")
+            return RecoveryEvidence(
+                "blocked-call", "replace_symbol_body" if mode == "edit" else "find_symbol",
+                mode != "edit", mode in {"blocked", "recovers", "edit"} and not self.completed, 31.0,
+            )
+
+    source = Source()
+    recovery = DaemonRecovery(source)
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args) -> None:
             pass
+
+        def do_POST(self) -> None:
+            if self.headers.get("Authorization") != "Bearer " + os.environ["DAEMON_TEST_SECRET"]:
+                self.send_response(401)
+                self.end_headers()
+                return
+            if self.path != "/mcp/recovery":
+                self.send_response(404)
+                self.end_headers()
+                return
+            data = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+            scope = RecoveryScope(data["project_root"], data["context"], data["session_id"])
+            payload = {"pid": os.getpid()}
+            try:
+                if data["action"] == "observe":
+                    evidence = recovery.observe(scope)
+                    payload.update(state="observed", request_id=evidence.request_id)
+                    if mode == "recovers":
+                        source.completed = True
+                elif data["action"] == "claim":
+                    token = recovery.claim(scope, data["request_id"])
+                    payload.update(state="claimed", token=token, request_id=data["request_id"])
+                else:
+                    recovery.release(scope, data["token"])
+                    payload.update(state="released")
+            except DaemonRecoveryRefusedError as error:
+                self.send_response(409)
+                self.end_headers()
+                self.wfile.write(str(error).encode())
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps(payload).encode())
 
         def do_GET(self) -> None:
             if self.headers.get("Authorization") != "Bearer " + os.environ["DAEMON_TEST_SECRET"]:
@@ -52,7 +102,7 @@ def top_level() -> None:
                 return
             response = {
                 "status": "alive",
-                "shared_mcp_protocol_version": 4,
+                "shared_mcp_protocol_version": int(os.getenv("DAEMON_TEST_PROTOCOL", "5")),
                 "shared_mcp_build_id": os.getenv("DAEMON_TEST_BUILD", "test-build"),
             }
             if mode != "legacy":

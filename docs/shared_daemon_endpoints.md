@@ -78,6 +78,76 @@ the surfaced tail. Only the child started by that attempt is cleaned up on failu
 or interruption; startup cleanup never discovers a different process to kill.
 
 After installing this update, restart older bridges and the shared daemon together
-when no tool calls are active. The shared protocol remains version 4, but the build
-fingerprint includes the new endpoint and startup implementations. Moving to a new
+when no tool calls are active. The shared protocol is version 5; the build fingerprint includes the endpoint,
+startup, and guarded recovery implementations. Moving to a new
 port does not automatically stop a daemon on the old port.
+
+## Restart from the terminal
+
+`serena restart` restarts the shared project daemon selected by the global port
+setting or environment override. It starts a daemon if none is listening.
+The command prints the selected endpoint and asks for confirmation before stopping
+anything, because it interrupts active tool calls and discards in-memory sessions.
+It does not update the Serena package, pull Git changes, or restart client-owned
+MCP bridge processes.
+
+```bash
+serena restart
+serena restart --yes
+serena restart --port 25432 --startup-timeout 45 --yes
+```
+
+`--host` defaults to `127.0.0.1`; only loopback endpoints may be restarted.
+`--port` overrides the environment/global port without persisting the override.
+`--startup-timeout` is a finite positive time allowance (default 30 seconds) for
+lock acquisition and readiness; process cleanup has separate bounded waits.
+`--yes` (or `-y`) skips confirmation, not authentication or ownership checks.
+The endpoint-scoped startup lock covers shutdown and startup, including competing
+bridge startups. Success is printed only after authenticated readiness succeeds.
+Failures exit nonzero and include the existing startup diagnostics where available.
+
+An authentication mismatch, ambiguous listener identity, or unresponsive heartbeat
+is not permission to kill a process. These failures are reported for operator
+inspection rather than bypassed. Other ports are not restarted.
+
+## Last-resort agent recovery through the bridge
+
+The shared MCP bridge exposes an additional, parameter-free `restart_daemon` tool.
+It uses a separate bounded control worker, outside the ordinary MCP call pool and
+the daemon's tool executor. It restarts the daemon while leaving the requesting
+bridge's stdio connection alive. This tool is for confirmed blocked retrievals,
+not routine cleanup, ordinary load, one failed call, or normal long-running work.
+Do not use the terminal restart command or process-killing commands as an agent
+fallback when the guarded tool refuses recovery.
+
+Recovery is authorized only when all of the following hold:
+
+- An authenticated compatible daemon identifies its actual caller-owned retrieval
+  worker as still running at least **30 seconds past its original deadline**.
+  The worker must be a recognized retrieval operation as well as read-only.
+- Two daemon-side observations at least **two seconds apart** identify that same
+  request. If the worker finishes, changes, or belongs to another bridge, recovery
+  is refused. A client timeout or network error is never sufficient evidence.
+- There are no queued tasks, pending requests, active legacy queries, runtime loads,
+  or executing work in another project. Edits, shell commands, REPL executions,
+  and unknown tool types are never eligible for agent recovery.
+- The current user's process identity, Serena entrypoint, and listening socket
+  match the selected endpoint before the coordinator terminates anything.
+
+The final observation atomically claims a short recovery lease and closes normal
+HTTP request admission, so a new edit cannot begin between authorization and
+shutdown. Heartbeat, cancellation, and recovery control remain reachable. The
+lease is released after a failed shutdown where possible and expires after
+60 seconds if the coordinator dies. No force argument or adjustable evidence
+threshold is exposed to the agent.
+
+These checks establish a persistently overdue worker holding the serial executor;
+they do not prove that arbitrary code could never finish later. Missing evidence,
+a completely unresponsive control endpoint, or an unfinished modifying operation
+therefore requires operator intervention instead of an automatic restart.
+
+Successful recovery resets all daemon in-memory sessions, including idle ones;
+persisted project files and memories are not deleted. Project services load again
+on the next call. Earlier operations are not replayed. Updated bridges can
+reconnect, but an older installed bridge cannot be upgraded by restarting the daemon;
+restart the client integrations after updating Serena to expose the new tool.

@@ -7,11 +7,12 @@ import pickle
 import secrets
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import requests as requests_lib
 from flask import Flask, Response, abort, request
@@ -22,6 +23,7 @@ from serena.config.serena_config import LanguageBackend, SerenaConfig, project_r
 from serena.constants import SerenaPorts
 from serena.project_server_endpoint import ProjectServerEndpoint
 from serena.shared_mcp_calls import DuplicateToolCallError, SharedMCPCalls
+from serena.shared_mcp_recovery import DaemonRecovery, DaemonRecoveryRefusedError, RecoveryEvidence, RecoveryScope
 from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_build_id
 from serena.util.tool_call import ToolCall, ToolCallBusyError, ToolCallContext, ToolCallInterrupted
 
@@ -73,6 +75,12 @@ class MCPBridgeCloseRequest(MCPBridgeSessionRequest):
     pass
 
 
+class MCPRecoveryRequest(MCPBridgeSessionRequest):
+    action: Literal["observe", "claim", "release"]
+    request_id: str = Field(default="", max_length=128)
+    token: str = Field(default="", max_length=128)
+
+
 class MCPToolCallRequest(BaseModel):
     """Execute one MCP tool against a shared project runtime."""
 
@@ -100,6 +108,9 @@ class MCPProjectRuntime:
     last_access: float
     active_calls: int = 0
     current_call: ToolCall | None = field(default=None, repr=False)
+    current_tool_name: str | None = None
+    current_tool_read_only: bool = False
+    current_session_id: str | None = None
     bridge_sessions: dict[str, float] = field(default_factory=dict)
     binding_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
@@ -193,6 +204,19 @@ class ProjectServer:
         return self.get_serena_config().auth_secret
 
     def _setup_routes(self) -> None:
+        self._mcp_recovery = DaemonRecovery(self)
+
+        def guarded(handler: Callable[..., Any]) -> Callable[..., Any]:
+            @wraps(handler)
+            def invoke(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    with self._mcp_recovery.admit():
+                        return handler(*args, **kwargs)
+                except DaemonRecoveryRefusedError as error:
+                    return Response(str(error), status=503, mimetype="text/plain")
+
+            return invoke
+
         @self._app.before_request
         def authenticate() -> None:
             # authenticate every request before parsing input or accessing projects
@@ -211,11 +235,13 @@ class ProjectServer:
             }
 
         @self._app.route("/query_project", methods=["POST"])
+        @guarded
         def query_project() -> str:
             query_request = QueryProjectRequest.model_validate(request.get_json())
             return self._query_project(query_request)
 
         @self._app.route("/mcp/runtime-info", methods=["POST"])
+        @guarded
         def mcp_runtime_info() -> Response:
             req = MCPRuntimeInfoRequest.model_validate(request.get_json())
             try:
@@ -226,16 +252,44 @@ class ProjectServer:
             return Response(info.model_dump_json(), mimetype="application/json")
 
         @self._app.route("/mcp/bridge-heartbeat", methods=["POST"])
+        @guarded
         def mcp_bridge_heartbeat() -> Response:
             req = MCPBridgeSessionRequest.model_validate(request.get_json())
             self._touch_mcp_bridge(req)
             return Response("ok", mimetype="text/plain")
 
         @self._app.route("/mcp/bridge-close", methods=["POST"])
+        @guarded
         def mcp_bridge_close() -> Response:
             req = MCPBridgeCloseRequest.model_validate(request.get_json())
             self._close_mcp_bridge(req)
             return Response("ok", mimetype="text/plain")
+
+        @self._app.route("/mcp/recovery", methods=["POST"])
+        def mcp_recovery() -> Response:
+            # keep recovery outside tool dispatch, while retaining the normal authentication gate
+            try:
+                req = MCPRecoveryRequest.model_validate(request.get_json())
+                scope = RecoveryScope(project_root_key(req.project_root), req.context, req.session_id)
+                payload: dict[str, Any] = {"pid": os.getpid()}
+                if req.action == "observe":
+                    evidence = self._mcp_recovery.observe(scope)
+                    payload.update(
+                        state="observed",
+                        request_id=evidence.request_id,
+                        retry_after_seconds=DaemonRecovery.OBSERVATION_SECONDS,
+                    )
+                elif req.action == "claim":
+                    token = self._mcp_recovery.claim(scope, req.request_id)
+                    payload.update(state="claimed", request_id=req.request_id, token=token)
+                else:
+                    self._mcp_recovery.release(scope, req.token)
+                    payload.update(state="released")
+                return Response(json.dumps(payload), mimetype="application/json")
+            except DaemonRecoveryRefusedError as error:
+                return Response(f"Recovery refused: {error}", status=409, mimetype="text/plain")
+            except ValueError as error:
+                return Response(str(error), status=400, mimetype="text/plain")
 
         @self._app.route("/mcp/cancel-tool-call", methods=["POST"])
         def mcp_cancel_tool_call() -> Response:
@@ -247,6 +301,7 @@ class ProjectServer:
             return Response(json.dumps({"request_id": req.request_id, "outcome": outcome}), mimetype="application/json")
 
         @self._app.route("/mcp/tool-call", methods=["POST"])
+        @guarded
         def mcp_tool_call() -> Response:
             req = MCPToolCallRequest.model_validate(request.get_json())
             try:
@@ -263,6 +318,7 @@ class ProjectServer:
             return Response(result, mimetype="text/plain")
 
         @self._app.route("/call_facade_method", methods=["POST"])
+        @guarded
         def call_facade_method() -> Response:
             call_request = CallFacadeMethodRequest.model_validate(request.get_json())
             try:
@@ -446,12 +502,51 @@ class ProjectServer:
                 exposed_names = {tool.get_name() for tool in runtime.agent.get_exposed_tool_instances()}
                 if req.tool_name not in exposed_names:
                     raise ValueError(f"Tool {req.tool_name!r} is not exposed by this shared runtime")
+                tool = runtime.agent.get_tool_by_name(req.tool_name)
+                with self._mcp_runtimes_lock:
+                    runtime.current_tool_name = req.tool_name
+                    runtime.current_tool_read_only = tool.is_readonly()
+                    runtime.current_session_id = req.session_id
                 call.check()
                 yield
             finally:
                 with self._mcp_runtimes_lock:
                     runtime.current_call = None
+                    runtime.current_tool_name = None
+                    runtime.current_tool_read_only = False
+                    runtime.current_session_id = None
                 runtime.binding_lock.release()
+
+    def get_recovery_evidence(self, scope: RecoveryScope) -> RecoveryEvidence:
+        """Inspect a stalled caller-owned worker without entering its executor or binding lock."""
+        with self._mcp_runtimes_lock:
+            # reject cold loads and any unrelated, queued, or legacy work
+            if self._mcp_runtime_load_locks:
+                raise DaemonRecoveryRefusedError("Project runtime loading is still in progress.")
+            target = self._mcp_runtimes.get((scope.project_root, scope.context))
+            if target is None:
+                raise DaemonRecoveryRefusedError("The caller has no loaded shared project runtime.")
+            for runtime in self._mcp_runtimes.values():
+                tasks = runtime.agent.get_current_tasks()
+                if runtime is target:
+                    if runtime.active_calls != 1 or len(tasks) != 1 or not tasks[0].is_running:
+                        raise DaemonRecoveryRefusedError("Expected one stranded worker with no waiting or queued requests.")
+                elif runtime.active_calls or tasks:
+                    raise DaemonRecoveryRefusedError("Another project has active or queued work.")
+            if self._agent is not None and self._agent.get_current_tasks():
+                raise DaemonRecoveryRefusedError("Legacy project queries are still executing.")
+
+            # use execution metadata captured by the actual worker, never agent-supplied claims
+            call = target.current_call
+            if call is None or target.current_session_id != scope.session_id or target.current_tool_name is None:
+                raise DaemonRecoveryRefusedError("No stranded worker belongs to this bridge session.")
+            return RecoveryEvidence(
+                request_id=call.request_id,
+                tool_name=target.current_tool_name,
+                read_only=target.current_tool_read_only,
+                running=call.running,
+                overdue_seconds=call.overdue_seconds,
+            )
 
     def _call_mcp_tool(self, req: MCPToolCallRequest) -> str:
         call = self._mcp_calls.register(req.session_id, req.request_id, req.deadline)

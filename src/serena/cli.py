@@ -516,7 +516,7 @@ class TopLevelCommands(AutoRegisteringGroup):
         "--port",
         type=int,
         default=None,
-        help="Listen port for the project server (default: ProjectServer.PORT).",
+        help="Listen port for the project server (default: environment override or global project_server_port).",
     )
     @click.option(
         "--log-level",
@@ -550,6 +550,57 @@ class TopLevelCommands(AutoRegisteringGroup):
 
         server = ProjectServer(host=host, port=port)
         server.run()
+
+    @staticmethod
+    @click.command(
+        "restart",
+        help="Restart the local shared project daemon (or start it if absent). "
+        "This interrupts active calls and clears in-memory sessions; MCP bridge processes are not restarted.",
+        context_settings={"max_content_width": _MAX_CONTENT_WIDTH},
+    )
+    @click.option("--host", default="127.0.0.1", show_default=True, help="Local daemon address (loopback only).")
+    @click.option(
+        "--port",
+        type=click.IntRange(1, 65535),
+        default=None,
+        help="Override SERENA_PROJECT_SERVER_PORT and the global project_server_port setting.",
+    )
+    @click.option(
+        "--startup-timeout",
+        type=click.FloatRange(min=0, min_open=True),
+        default=30.0,
+        show_default=True,
+        help="Seconds allowed for lock acquisition and restart readiness; cleanup has separate bounded waits.",
+    )
+    @click.option("--yes", "-y", is_flag=True, help="Confirm interrupting the selected daemon without prompting.")
+    def restart(host: str, port: int | None, startup_timeout: float, yes: bool) -> None:
+        import math
+
+        from serena.project_server_endpoint import ProjectServerEndpoint
+        from serena.shared_mcp_daemon import SharedMCPDaemon
+
+        # validate the selected endpoint and time allowance before requesting operator confirmation
+        if not math.isfinite(startup_timeout):
+            raise click.BadParameter("must be finite and positive", param_hint="--startup-timeout")
+        try:
+            config = SerenaConfig.from_config_file()
+            endpoint = ProjectServerEndpoint.from_config(config, host, port)
+            if not endpoint.is_loopback:
+                raise ValueError("Restart requires a loopback daemon endpoint.")
+            daemon = SharedMCPDaemon(config, endpoint)
+        except Exception as error:
+            raise click.ClickException(str(error)) from error
+        click.echo(f"Selected shared daemon: {endpoint.base_url}")
+        click.echo("Active calls will be interrupted and in-memory sessions reset. Client-owned MCP bridges are not restarted.")
+        if not yes:
+            click.confirm("Restart this daemon?", default=False, abort=True)
+
+        # report readiness only after the replacement passes its authenticated health check
+        try:
+            client = daemon.restart(startup_timeout=startup_timeout)
+        except Exception as error:
+            raise click.ClickException(str(error)) from error
+        click.echo(f"Shared Serena daemon ready at {endpoint.base_url} (pid={client.pid}).")
 
     @staticmethod
     @click.command(

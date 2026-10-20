@@ -26,6 +26,8 @@ from serena.project_server_endpoint import (
 )
 from serena.shared_mcp_client import SharedMCPDaemonClient
 from serena.shared_mcp_daemon import ProjectServerStartupError, SharedMCPDaemon
+from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION
+from serena.shared_mcp_recovery import DaemonRecoveryRefusedError, RecoveryScope
 
 
 def unused_port() -> int:
@@ -96,6 +98,7 @@ def daemon_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("")
     shutil.copyfile(Path(__file__).parents[1] / "resources" / "project_server" / "cli.py", package / "cli.py")
+    shutil.copyfile(Path(__file__).parents[2] / "src" / "serena" / "shared_mcp_recovery.py", package / "shared_mcp_recovery.py")
     home = tmp_path / "home"
     home.mkdir()
     starts = tmp_path / "starts.jsonl"
@@ -103,6 +106,7 @@ def daemon_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("DAEMON_TEST_STARTS", str(starts))
     monkeypatch.setenv("DAEMON_TEST_SECRET", "startup-test-secret")
     monkeypatch.setenv("DAEMON_TEST_BUILD", "test-build")
+    monkeypatch.setenv("DAEMON_TEST_PROTOCOL", str(SHARED_MCP_PROTOCOL_VERSION))
     monkeypatch.delenv("SERENA_PROJECT_SERVER_PORT", raising=False)
     monkeypatch.setattr("serena.shared_mcp_client.shared_mcp_build_id", lambda: "test-build")
     fixture = DaemonEnvironment(home, starts)
@@ -373,3 +377,84 @@ def test_unverifiable_ownership_leaves_listener_untouched(daemon_environment, mo
             SharedMCPDaemon(daemon_environment.config(port)).ensure_running(5)
     assert listener.poll() is None
     assert len(daemon_environment.records()) == 1
+
+
+@pytest.mark.parametrize("old_build", ["test-build", "old-build"])
+def test_restart_replaces_selected_daemon_but_not_another_port(daemon_environment, old_build):
+    port = unused_port()
+    old = daemon_environment.launch(port, build=old_build)
+    other = daemon_environment.launch(unused_port())
+    client = SharedMCPDaemon(daemon_environment.config(port)).restart(15)
+    assert client.pid != old.pid
+    assert old.wait(timeout=2) is not None
+    assert other.poll() is None
+    assert daemon_environment.records()[-1]["port"] == port
+
+
+def test_restart_starts_a_missing_daemon(daemon_environment):
+    client = SharedMCPDaemon(daemon_environment.config(unused_port())).restart(5)
+    assert client.pid is not None
+    assert len(daemon_environment.records()) == 1
+
+
+@pytest.mark.parametrize("mode", ["401", "403", "invalid"])
+def test_restart_never_replaces_an_unauthenticated_or_unverifiable_listener(daemon_environment, mode):
+    port = unused_port()
+    old = daemon_environment.launch(port, mode=mode)
+    with pytest.raises(ProjectServerEndpointError):
+        SharedMCPDaemon(daemon_environment.config(port)).restart(5)
+    assert old.poll() is None
+    assert len(daemon_environment.records()) == 1
+
+
+def test_restart_lock_timeout_does_not_stop_listener(daemon_environment):
+    port = unused_port()
+    old = daemon_environment.launch(port)
+    endpoint = ProjectServerEndpoint(port=port)
+    with FileLock(str(endpoint.startup_lock_path(daemon_environment.home))):
+        with pytest.raises(ProjectServerStartupError, match="startup lock"):
+            SharedMCPDaemon(daemon_environment.config(port)).restart(0.1)
+    assert old.poll() is None
+
+
+def test_restart_reports_replacement_failure_and_reaps_child(daemon_environment, monkeypatch):
+    port = unused_port()
+    old = daemon_environment.launch(port)
+    monkeypatch.setenv("DAEMON_TEST_MODE", "fail")
+    with pytest.raises(ProjectServerStartupError, match="Actual startup failure"):
+        SharedMCPDaemon(daemon_environment.config(port)).restart(15)
+    old.wait(timeout=2)
+    assert not psutil.pid_exists(daemon_environment.records()[-1]["pid"])
+
+
+def test_agent_recovery_restarts_after_two_positive_server_observations(daemon_environment):
+    port = unused_port()
+    old = daemon_environment.launch(port, mode="blocked")
+    client = SharedMCPDaemon(daemon_environment.config(port)).recover_blocked(RecoveryScope("/repo", "codex", "chat"), 15)
+    assert client.pid != old.pid
+    old.wait(timeout=2)
+    assert len(daemon_environment.records()) == 2
+
+
+@pytest.mark.parametrize("mode", ["ready", "recovers", "edit"])
+def test_agent_recovery_preserves_healthy_recovered_or_editing_daemons(daemon_environment, mode):
+    port = unused_port()
+    old = daemon_environment.launch(port, mode=mode)
+    with pytest.raises(DaemonRecoveryRefusedError):
+        SharedMCPDaemon(daemon_environment.config(port)).recover_blocked(RecoveryScope("/repo", "codex", "chat"), 15)
+    assert old.poll() is None
+    assert len(daemon_environment.records()) == 1
+
+
+def test_agent_recovery_does_not_start_an_absent_daemon(daemon_environment):
+    with pytest.raises(ProjectServerUnavailableError):
+        SharedMCPDaemon(daemon_environment.config(unused_port())).recover_blocked(RecoveryScope("/repo", "codex", "chat"), 5)
+    assert daemon_environment.records() == []
+
+
+def test_agent_recovery_cannot_restart_another_sessions_stalled_call(daemon_environment):
+    port = unused_port()
+    old = daemon_environment.launch(port, mode="blocked")
+    with pytest.raises(DaemonRecoveryRefusedError):
+        SharedMCPDaemon(daemon_environment.config(port)).recover_blocked(RecoveryScope("/repo", "codex", "other"), 5)
+    assert old.poll() is None

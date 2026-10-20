@@ -11,6 +11,7 @@ import requests
 
 from serena.project_server_endpoint import ProjectServerEndpoint, ProjectServerEndpointError
 from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_build_id
+from serena.shared_mcp_recovery import DaemonRecoveryRefusedError, RecoveryScope
 from serena.util.tool_call import ToolCall, ToolCallContext
 
 if TYPE_CHECKING:
@@ -84,6 +85,40 @@ class SharedMCPDaemonClient:
                 server_protocol_version=server_protocol if isinstance(server_protocol, int) else None,
                 server_build_id=server_build_id if isinstance(server_build_id, str) else None,
             )
+
+    def recovery_request(
+        self,
+        action: str,
+        scope: RecoveryScope,
+        *,
+        request_id: str = "",
+        token: str = "",
+        timeout: float = 5.0,
+    ) -> dict[str, Any]:
+        """Use the authenticated recovery control path, independently of tool execution."""
+        with requests.post(
+            f"{self._base_url}/mcp/recovery",
+            json={
+                "action": action,
+                "project_root": scope.project_root,
+                "context": scope.context,
+                "session_id": scope.session_id,
+                "request_id": request_id,
+                "token": token,
+            },
+            headers=self._headers,
+            timeout=timeout,
+            allow_redirects=False,
+        ) as response:
+            self._endpoint.check_authentication(response)
+            if response.status_code != 200:
+                raise DaemonRecoveryRefusedError(
+                    f"Daemon recovery at {self._base_url} refused (HTTP {response.status_code}): {response.text[:2000]}"
+                )
+            data = response.json()
+        if not isinstance(data, dict) or type(data.get("pid")) is not int or data["pid"] != self.pid:
+            raise DaemonRecoveryRefusedError("The daemon identity changed during recovery; no restart is authorized.")
+        return data
 
     def get_runtime_info(self, project_root: str, context: str, session_id: str | None = None) -> SharedMCPRuntimeInfo:
         response = requests.post(

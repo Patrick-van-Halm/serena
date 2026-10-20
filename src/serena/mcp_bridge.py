@@ -8,6 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
 
+import anyio
 import docstring_parser
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.fastmcp.server import Context, FastMCP, Settings
@@ -22,6 +23,7 @@ from serena.config.serena_config import SerenaConfig, project_root_key, project_
 from serena.project_server_endpoint import ProjectServerEndpointError
 from serena.shared_mcp_client import SharedMCPDaemonClient
 from serena.shared_mcp_daemon import SharedMCPDaemon
+from serena.shared_mcp_recovery import RecoveryScope
 from serena.tools import Tool, ToolCallError, ToolRegistry
 from serena.util.tool_call import AsyncToolCallRunner, ToolCall, ToolCallCancellationHandler
 
@@ -211,7 +213,9 @@ class SerenaMCPBridge:
         self.session_id = secrets.token_hex(8)
 
         config = SerenaConfig.from_config_file()
-        self.client = ensure_shared_daemon(config)
+        self._daemon = SharedMCPDaemon(config)
+        self._recovery_lock = threading.Lock()
+        self.client = self._daemon.ensure_running()
         runtime_info = self.client.get_runtime_info(self.project_root, self.context.name, session_id=self.session_id)
         try:
             confirmed_root = _validate_runtime_project_root(self.project_root, runtime_info.project_root)
@@ -274,6 +278,28 @@ class SerenaMCPBridge:
             )
             self.server._tool_manager._tools[tool_name] = mcp_tool
 
+        # register outside the proxy registry: this control tool must never join the stalled executor
+        self.server.add_tool(
+            self.restart_daemon,
+            name="restart_daemon",
+            description=(
+                "Last-resort recovery only when Serena tools are confirmed blocked, not merely slow. "
+                "Do not use after a single timeout, during normal work, or to bypass an error. "
+                "The daemon must twice verify the same retrieval-only worker at least 30 seconds past its deadline "
+                "with no queued or unrelated work. Edits, shell/REPL work, and unverifiable failures are refused. "
+                "A successful recovery discards in-memory sessions. No force option is available. "
+                "If refused, report the blocker; do not fall back to CLI restart, shell commands, or killing processes."
+            ),
+            annotations=ToolAnnotations(
+                title="Recover Blocked Serena Daemon",
+                readOnlyHint=False,
+                destructiveHint=True,
+                idempotentHint=False,
+                openWorldHint=False,
+            ),
+            structured_output=False,
+        )
+
         log.info(
             "Shared MCP bridge ready for %s via daemon (%d tools, session=%s)",
             runtime_info.project_root,
@@ -314,6 +340,29 @@ class SerenaMCPBridge:
             },
         )
 
+    async def restart_daemon(self) -> str:
+        """Recover a proven blocked retrieval through a separate, bounded control worker."""
+        if not self._recovery_lock.acquire(blocking=False):
+            raise ToolError("A Serena recovery is already in progress.")
+        try:
+
+            def recover() -> str:
+                client = self._daemon.recover_blocked(RecoveryScope(self.project_root, self.context.name, self.session_id))
+                self.client = client
+                return (
+                    f"Shared Serena daemon recovered (pid={client.pid}). In-memory session state was reset. "
+                    "The bridge remains connected; project services will reload on the next call. "
+                    "Do not replay earlier modifying operations without checking their results."
+                )
+
+            # keep the normal MCP worker pool out of this path; finish an admitted restart even on host cancellation
+            with anyio.CancelScope(shield=True):
+                return await anyio.to_thread.run_sync(recover, limiter=anyio.CapacityLimiter(1))
+        except Exception as error:
+            raise ToolError(f"Serena recovery failed or was refused: {error}") from error
+        finally:
+            self._recovery_lock.release()
+
     def cancel_tool_call(self, call: ToolCall) -> None:
         """Forward host cancellation without retrying the original operation."""
         self.client.cancel_tool_call(self.session_id, call.request_id)
@@ -346,7 +395,7 @@ class SerenaMCPBridge:
                 # a destructive operation twice.
                 log.debug("Shared MCP bridge heartbeat failed; reconnecting: %s", e)
                 try:
-                    client = ensure_shared_daemon(SerenaConfig.from_config_file())
+                    client = self._daemon.ensure_running()
                     client.get_runtime_info(
                         self.project_root,
                         self.context.name,

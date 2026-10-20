@@ -6,7 +6,7 @@ import hashlib
 from functools import lru_cache
 from pathlib import Path
 
-SHARED_MCP_PROTOCOL_VERSION = 4
+SHARED_MCP_PROTOCOL_VERSION = 5
 
 # Files whose implementation materially affects a long-lived shared daemon runtime.
 # A bridge from a newer uvx archive must not silently reuse an older daemon that has
@@ -15,6 +15,7 @@ _RUNTIME_FILES = (
     "serena/project_server.py",
     "serena/project_server_endpoint.py",
     "serena/shared_mcp_daemon.py",
+    "serena/shared_mcp_recovery.py",
     "serena/mcp_bridge.py",
     "serena/mcp.py",
     "serena/shared_mcp_client.py",
