@@ -53,9 +53,20 @@ not share a startup lock. `localhost` is canonicalized to `127.0.0.1`.
 ## Startup and recovery
 
 An authenticated compatible daemon is reused. Automatic local startup is attempted
-only when the connection is explicitly refused. Timeouts, proxy failures,
-redirects, invalid heartbeat data, and other HTTP errors are not evidence that a
-port is available.
+when the connection is explicitly refused. On WSL only, a heartbeat timeout may
+also permit a startup attempt when an exclusive bind to the selected loopback
+address and port succeeds after rechecking health under the endpoint startup lock;
+it does not use address or port reuse and never authorizes terminating a listener.
+If the port is occupied/reserved or cannot be inspected by binding, startup fails
+without stopping anything. A bind race with a separately launched service is still
+handled by the child's actual bind and authenticated readiness checks.
+
+This check establishes availability only in the current WSL network namespace,
+not the state of Windows-side services. It does not change firewall rules or
+networking modes. Non-WSL and non-loopback timeouts, proxy failures, redirects,
+invalid heartbeat data, and other HTTP errors remain terminal. A started child's
+readiness checks may retry timeouts only within the original startup deadline;
+this does not authorize replacing another process.
 
 An HTTP **401 or 403** reports an **endpoint/configuration mismatch**. Check the
 resolved URL, `SERENA_HOME`, the global port setting, environment overrides, and
@@ -108,7 +119,9 @@ Failures exit nonzero and include the existing startup diagnostics where availab
 
 An authentication mismatch, ambiguous listener identity, or unresponsive heartbeat
 is not permission to kill a process. These failures are reported for operator
-inspection rather than bypassed. Other ports are not restarted.
+inspection rather than bypassed. A WSL timeout with an exclusively bindable local
+socket can start an absent daemon, but never authorize termination. Other ports
+are not restarted.
 
 ## Last-resort agent recovery through the bridge
 

@@ -262,6 +262,8 @@ def test_interruption_preserves_original_error_and_cleans_child(daemon_environme
 
 @pytest.mark.parametrize("error", [requests.ReadTimeout("busy"), requests.ConnectionError("connection reset")])
 def test_indeterminate_health_failure_is_not_treated_as_absence(daemon_environment, monkeypatch, error) -> None:
+    monkeypatch.setattr("serena.shared_mcp_daemon.platform.release", lambda: "generic-linux")
+
     def fail(*args, **kwargs):
         raise error
     monkeypatch.setattr(requests, "get", fail)

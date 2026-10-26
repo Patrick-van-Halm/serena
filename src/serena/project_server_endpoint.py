@@ -26,6 +26,10 @@ class ProjectServerAuthenticationError(ProjectServerEndpointError):
     """An endpoint/configuration mismatch reported by authentication rejection."""
 
 
+class ProjectServerTimeoutError(ProjectServerEndpointError):
+    """A timed-out heartbeat, not evidence that the selected endpoint is unoccupied."""
+
+
 class ProjectServerUnavailableError(ConnectionError):
     """A refused connection, for which local daemon startup may be attempted."""
 
@@ -125,7 +129,7 @@ class ProjectServerEndpoint:
             )
 
     def heartbeat(self, auth_secret: str, timeout: float = 5.0) -> dict[str, Any]:
-        """Authenticate and validate a heartbeat; only connection refusal permits startup."""
+        """Authenticate and validate a heartbeat; distinguish timeouts from confirmed refusal."""
         # distinguish refusal from timeouts, HTTP errors, redirects, and invalid service responses
         if not auth_secret:
             raise ProjectServerAuthenticationError(f"Serena endpoint/configuration mismatch at {self.base_url}: auth_secret is empty")
@@ -136,6 +140,8 @@ class ProjectServerEndpoint:
                 timeout=timeout,
                 allow_redirects=False,
             )
+        except requests.Timeout as error:
+            raise ProjectServerTimeoutError(f"Project server health check timed out at {self.base_url}: {error}") from error
         except requests.ConnectionError as error:
             if not isinstance(error, requests.exceptions.ProxyError) and self._is_connection_refused(error):
                 raise ProjectServerUnavailableError(f"No project server is accepting connections at {self.base_url}") from error

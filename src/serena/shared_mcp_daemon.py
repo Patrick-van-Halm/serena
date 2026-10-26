@@ -5,6 +5,8 @@
 import logging
 import math
 import os
+import platform
+import socket
 import subprocess
 import sys
 import tempfile
@@ -17,7 +19,12 @@ from typing import TYPE_CHECKING, Any
 import psutil
 from filelock import FileLock, Timeout
 
-from serena.project_server_endpoint import ProjectServerEndpoint, ProjectServerEndpointError, ProjectServerUnavailableError
+from serena.project_server_endpoint import (
+    ProjectServerEndpoint,
+    ProjectServerEndpointError,
+    ProjectServerTimeoutError,
+    ProjectServerUnavailableError,
+)
 from serena.shared_mcp_client import IncompatibleSharedMCPDaemonError, SharedMCPDaemonClient
 from serena.shared_mcp_recovery import DaemonRecovery, DaemonRecoveryRefusedError, RecoveryScope
 
@@ -52,9 +59,11 @@ class SharedMCPDaemon:
         """
         Reuse a compatible daemon or start one after a refused connection.
 
-        Auth failures, invalid HTTP responses, and indeterminate network failures are
-        terminal. Only an authenticated incompatible Serena listener owned by this user
-        may be replaced; ownership is verified against the resolved endpoint.
+        On WSL, a heartbeat timeout may also permit startup after a repeated health
+        check and an exclusive local bind check under the endpoint lock. It never
+        authorizes termination. Authentication and other indeterminate failures are
+        terminal. Only an authenticated incompatible Serena listener owned by this
+        user may be replaced.
         """
         # budget lock contention and readiness checks together
         deadline = self._startup_deadline(startup_timeout)
@@ -62,6 +71,9 @@ class SharedMCPDaemon:
             return self._connect(deadline)
         except (ProjectServerUnavailableError, IncompatibleSharedMCPDaemonError):
             pass
+        except ProjectServerTimeoutError:
+            if not self._is_wsl_loopback():
+                raise
 
         with self._startup_lock(deadline):
             try:
@@ -70,6 +82,8 @@ class SharedMCPDaemon:
                 self._stop_daemon(error.pid)
             except ProjectServerUnavailableError:
                 pass
+            except ProjectServerTimeoutError as error:
+                self._verify_wsl_startup_after_timeout(error)
             self._remaining(deadline)
             return self._start_and_wait(deadline)
 
@@ -93,6 +107,8 @@ class SharedMCPDaemon:
                 client = self._connect(deadline)
             except ProjectServerUnavailableError:
                 log.info("No shared Serena daemon running at %s; starting one", self._endpoint.base_url)
+            except ProjectServerTimeoutError as error:
+                self._verify_wsl_startup_after_timeout(error)
             except IncompatibleSharedMCPDaemonError as error:
                 self._stop_daemon(error.pid)
             else:
@@ -181,6 +197,38 @@ class SharedMCPDaemon:
             heartbeat_timeout=min(5.0, self._remaining(deadline)),
         )
 
+    def _is_wsl_loopback(self) -> bool:
+        """Whether a Linux-local socket check can qualify this WSL endpoint for startup."""
+        return sys.platform == "linux" and "microsoft" in platform.release().lower() and self._endpoint.is_loopback
+
+    def _verify_wsl_startup_after_timeout(self, error: ProjectServerTimeoutError) -> None:
+        """Permit local WSL startup only if a fresh, exclusive bind succeeds.
+
+        WSL loopback forwarding can time out even without a Linux listener. Binding
+        without address/port reuse establishes availability in this network namespace;
+        a timeout alone does not. This check never authorizes stopping a process.
+        """
+        # keep remote endpoints and other platforms fail-closed on indeterminate failures
+        if not self._is_wsl_loopback():
+            raise error
+
+        # do not reuse addresses: an existing or reserved socket must prevent startup
+        family = socket.AF_INET6 if ":" in self._endpoint.host else socket.AF_INET
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.bind((self._endpoint.host, self._endpoint.port))
+        except OSError as bind_error:
+            raise ProjectServerEndpointError(
+                f"{error}. WSL startup refused: the local endpoint could not be exclusively bound "
+                f"({bind_error}). No process was started or terminated."
+            ) from bind_error
+
+        # release the probe before the child binds; races remain subject to bind failure and authenticated readiness
+        log.warning(
+            "Heartbeat timed out at %s, but its WSL-local socket is available; allowing a daemon startup attempt",
+            self._endpoint.base_url,
+        )
+
     def _command(self) -> list[str]:
         # use the bridge's interpreter instead of an unrelated installation found on PATH
         return [
@@ -233,7 +281,8 @@ class SharedMCPDaemon:
                         raise TimeoutError(f"daemon did not become ready before the startup deadline; last health check: {last_error}")
                     try:
                         client = self._connect(deadline)
-                    except ProjectServerUnavailableError as error:
+                    except (ProjectServerUnavailableError, ProjectServerTimeoutError) as error:
+                        # WSL can also time out while our owned child is still preparing its listener
                         last_error = error
                         time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
                     else:
