@@ -26,6 +26,7 @@ from serena.shared_mcp_daemon import SharedMCPDaemon
 from serena.shared_mcp_recovery import RecoveryScope
 from serena.tools import Tool, ToolCallError, ToolRegistry
 from serena.util.tool_call import AsyncToolCallRunner, ToolCall, ToolCallCancellationHandler
+from serena.util.tool_result import ToolResult
 
 log = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ class BridgeFastMCPTool(FastMCPTool):
                 description = param_doc.description.strip().strip(".") + "."
                 property_schema["description"] = description[0].upper() + description[1:]
 
-        async def execute_fn(**kwargs) -> str:
+        async def execute_fn(**kwargs) -> ToolResult:
             try:
                 return await AsyncToolCallRunner.run(
                     lambda: tool.apply_ex(log_call=True, catch_exceptions=False, **kwargs),
@@ -316,7 +317,7 @@ class SerenaMCPBridge:
             catch_exceptions: bool = True,
             mcp_ctx: Context | None = None,
             **kwargs,
-        ) -> str:
+        ) -> ToolResult:
             try:
                 return bridge.client.call_tool(
                     project_root=bridge.project_root,

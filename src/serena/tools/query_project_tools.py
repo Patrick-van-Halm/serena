@@ -2,9 +2,12 @@
 
 import json
 
+from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
+
 from serena.config.serena_config import LanguageBackend
 from serena.jetbrains.jetbrains_plugin_client import JetBrainsPluginClientManager
 from serena.tools import Tool, ToolMarkerDoesNotRequireActiveProject, ToolMarkerOptional
+from serena.util.tool_result import ToolResult
 
 
 class ListQueryableProjectsTool(Tool, ToolMarkerOptional, ToolMarkerDoesNotRequireActiveProject):
@@ -46,7 +49,12 @@ class QueryProjectTool(Tool, ToolMarkerOptional, ToolMarkerDoesNotRequireActiveP
     by executing a read-only tool.
     """
 
-    def apply(self, project_name: str, tool_name: str, tool_params_json: str) -> str:
+    @classmethod
+    def get_apply_fn_metadata_from_cls(cls, structured_output: bool | None = None) -> FuncMetadata:
+        # forwarded tools may return text or native content, so a fixed output schema is inappropriate
+        return super().get_apply_fn_metadata_from_cls(structured_output=False)
+
+    def apply(self, project_name: str, tool_name: str, tool_params_json: str) -> ToolResult:
         """
         Queries a project by executing a read-only Serena tool. The tool will be executed in the context of the project.
         Use this to query information from projects other than the activated project.
@@ -69,7 +77,7 @@ class QueryProjectTool(Tool, ToolMarkerOptional, ToolMarkerDoesNotRequireActiveP
             assert registered_project is not None, f"Project {project_name} is not registered and cannot be queried."
             project = registered_project.get_project_instance(self.agent.serena_config)
             with tool.agent.active_project_context(project):
-                return tool.apply(**json.loads(tool_params_json))
+                return tool.get_apply_fn()(**json.loads(tool_params_json))
 
     def _is_project_server_required(self, tool: Tool) -> bool:
         match self.agent.get_language_backend():

@@ -32,6 +32,7 @@ from serena.tools import Tool, ToolCallError
 from serena.util.exception import show_fatal_exception_safe
 from serena.util.logging import MemoryLogHandler
 from serena.util.tool_call import AsyncToolCallRunner
+from serena.util.tool_result import ToolResult
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ class SerenaFastMCPTool(FastMCPTool):
                 param_desc = f"{param_doc.description.strip().strip('.') + '.'}"
                 properties["description"] = param_desc[0].upper() + param_desc[1:]
 
-        async def execute_fn(**kwargs) -> str:
+        async def execute_fn(**kwargs) -> ToolResult:
             try:
                 return await AsyncToolCallRunner.run(
                     lambda: tool.apply_ex(log_call=True, catch_exceptions=False, **kwargs),
@@ -285,7 +286,7 @@ class SerenaMCPFactory:
         """
         Creates an MCP tool from a Serena Tool instance.
 
-        :param tool: the Serena Tool instance to convert.
+        :param tool: The Serena Tool instance to convert.
         :param openai_tool_compatible: whether to process the tool schema to be compatible with OpenAI tools
             (doesn't accept integer, needs number instead, etc.). This allows using Serena MCP within codex.
         :param structured_output: whether to use structured output for the tool (None = auto)
@@ -348,10 +349,9 @@ class SerenaMCPFactory:
         :param language_backend: the language backend to use, overriding the configuration setting.
         :param agent_interface: the agent interface to use, overriding the configuration setting.
         :param enable_web_dashboard: Whether to enable the web dashboard. If not specified, will take the value from the serena configuration.
-        :param enable_gui_log_window: Whether to enable the GUI log window. It currently does not work on macOS, and setting this to True will be ignored then.
+        :param enable_gui_log_window: Whether to enable the gui log window. It currently does not work on macOS, and setting this to True will be ignored then.
             If not specified, will take the value from the serena configuration.
         :param open_web_dashboard: Whether to open the web dashboard on launch.
-            If not specified, will take the value from the serena configuration.
         :param log_level: Log level. If not specified, will take the value from the serena configuration.
         :param trace_lsp_communication: Whether to trace the communication between Serena and the language servers.
             This is useful for debugging language server issues.

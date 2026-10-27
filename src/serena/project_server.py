@@ -26,6 +26,7 @@ from serena.shared_mcp_calls import DuplicateToolCallError, SharedMCPCalls
 from serena.shared_mcp_recovery import DaemonRecovery, DaemonRecoveryRefusedError, RecoveryEvidence, RecoveryScope
 from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_build_id
 from serena.util.tool_call import ToolCall, ToolCallBusyError, ToolCallContext, ToolCallInterrupted
+from serena.util.tool_result import ToolResult, ToolResultCodec
 
 if TYPE_CHECKING:
     from serena.agent import SerenaAgent
@@ -236,9 +237,10 @@ class ProjectServer:
 
         @self._app.route("/query_project", methods=["POST"])
         @guarded
-        def query_project() -> str:
+        def query_project() -> Response:
             query_request = QueryProjectRequest.model_validate(request.get_json())
-            return self._query_project(query_request)
+            body, content_type = ToolResultCodec.encode(self._query_project(query_request))
+            return Response(body, content_type=content_type)
 
         @self._app.route("/mcp/runtime-info", methods=["POST"])
         @guarded
@@ -315,7 +317,8 @@ class ProjectServer:
             except Exception as e:
                 log.warning("Shared MCP tool call failed: %s", e)
                 return Response(f"{type(e).__name__}: {e}", status=400, mimetype="text/plain")
-            return Response(result, mimetype="text/plain")
+            body, content_type = ToolResultCodec.encode(result)
+            return Response(body, content_type=content_type)
 
         @self._app.route("/call_facade_method", methods=["POST"])
         @guarded
@@ -548,7 +551,7 @@ class ProjectServer:
                 overdue_seconds=call.overdue_seconds,
             )
 
-    def _call_mcp_tool(self, req: MCPToolCallRequest) -> str:
+    def _call_mcp_tool(self, req: MCPToolCallRequest) -> ToolResult:
         call = self._mcp_calls.register(req.session_id, req.request_id, req.deadline)
         if req.tool_name == "activate_project":
             raise ValueError("activate_project is disabled for shared MCP runtimes; project routing is bridge-controlled")
@@ -676,7 +679,7 @@ class ProjectServer:
                 self._loaded_projects_by_root[key] = project
             return project
 
-    def _query_project(self, req: QueryProjectRequest) -> str:
+    def _query_project(self, req: QueryProjectRequest) -> ToolResult:
         """Handle a /query_project request by invoking the agent on the specified project and tool.
 
         The active project is process-wide state, whereas ``apply_ex`` runs the tool on the
@@ -768,7 +771,7 @@ class ProjectServerClient:
         response.raise_for_status()
 
     def close_mcp_bridge(self, project_root: str, context: str, session_id: str) -> None:
-        payload = MCPBridgeCloseRequest(project_root=project_root, context=context, session_id=session_id).model_dump()
+        payload = MCPBridgeSessionRequest(project_root=project_root, context=context, session_id=session_id).model_dump()
         try:
             requests_lib.post(
                 f"{self._base_url}/mcp/bridge-close",
@@ -787,7 +790,7 @@ class ProjectServerClient:
         session_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-    ) -> str:
+    ) -> ToolResult:
         payload = MCPToolCallRequest(
             project_root=project_root,
             context=context,
@@ -804,9 +807,9 @@ class ProjectServerClient:
         self._endpoint.check_authentication(response)
         if not response.ok:
             raise ValueError(f"Shared MCP daemon error ({response.status_code}): {response.text[:2000]}")
-        return response.text
+        return ToolResultCodec.decode(response.text, response.headers.get("Content-Type", ""))
 
-    def query_project(self, project_name: str, tool_name: str, tool_params_json: str) -> str:
+    def query_project(self, project_name: str, tool_name: str, tool_params_json: str) -> ToolResult:
         """
         Query a project by executing a Serena tool in its context.
 
@@ -816,7 +819,7 @@ class ProjectServerClient:
         :param project_name: the name of the project to query.
         :param tool_name: the name of the tool to execute. The tool must be read-only.
         :param tool_params_json: the parameters to pass to the tool, encoded as a JSON string.
-        :return: the tool's result as a string.
+        :return: the tool's text or native MCP content.
         """
         payload = QueryProjectRequest(
             project_name=project_name,
@@ -827,7 +830,7 @@ class ProjectServerClient:
         response = requests_lib.post(f"{self._base_url}/query_project", json=payload, headers=self._headers, timeout=self._timeout)
         self._endpoint.check_authentication(response)
         response.raise_for_status()
-        return response.text
+        return ToolResultCodec.decode(response.text, response.headers.get("Content-Type", ""))
 
     def call_facade_method(self, project_name: str, facade_name: str, method_name: str, args: list[Any], kwargs: dict[str, Any]) -> Any:
         """

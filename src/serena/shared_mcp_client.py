@@ -13,6 +13,7 @@ from serena.project_server_endpoint import ProjectServerEndpoint, ProjectServerE
 from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_build_id
 from serena.shared_mcp_recovery import DaemonRecoveryRefusedError, RecoveryScope
 from serena.util.tool_call import ToolCall, ToolCallContext
+from serena.util.tool_result import ToolResult, ToolResultCodec
 
 if TYPE_CHECKING:
     from serena.config.serena_config import SerenaConfig
@@ -180,7 +181,7 @@ class SharedMCPDaemonClient:
         session_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-    ) -> str:
+    ) -> ToolResult:
         # carry one deadline through worker admission, HTTP dispatch, server queueing, and execution
         call_context = ToolCallContext.current()
         call = call_context.call if call_context is not None else ToolCall(self._tool_timeout)
@@ -216,4 +217,4 @@ class SharedMCPDaemonClient:
         self._endpoint.check_authentication(response)
         if not response.ok:
             raise ValueError(f"Shared MCP daemon error ({response.status_code}): {response.text[:2000]}")
-        return response.text
+        return ToolResultCodec.decode(response.text, response.headers.get("Content-Type", ""))

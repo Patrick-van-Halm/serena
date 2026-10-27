@@ -26,6 +26,7 @@ from serena.util.class_decorators import singleton
 from serena.util.inspection import iter_subclasses
 from serena.util.text_utils import TextOutputUtils
 from serena.util.tool_call import ToolCall, ToolCallContext, ToolCallInterrupted
+from serena.util.tool_result import ToolResult, ToolResultCodec
 from solidlsp.ls_exceptions import SolidLSPException
 
 if TYPE_CHECKING:
@@ -129,7 +130,7 @@ class ToolMarkerBeta(ToolMarker):
 class ApplyMethodProtocol(Protocol):
     """Callable protocol for the apply method of a tool."""
 
-    def __call__(self, *args: Any, **kwargs: Any) -> str:
+    def __call__(self, *args: Any, **kwargs: Any) -> ToolResult:
         pass
 
 
@@ -303,7 +304,7 @@ class Tool(Component):
         :param result: the full result string
         :param max_answer_chars: maximum allowed characters. -1 means use the default from config.
         :param shortened_result_factories: optional list of closures, each producing a progressively shorter
-            version of the result. They are tried in order until one fits within ``max_answer_chars``.
+            version of the result. They are tried in order until one fits within the limit.
         :return: the result string, potentially replaced by a shortened version
         """
         max_answer_chars = self._resolve_max_answer_chars(max_answer_chars)
@@ -335,10 +336,10 @@ class Tool(Component):
         mcp_ctx: Context | None = None,
         session_id_override: str | None = None,
         **kwargs,
-    ) -> str:
+    ) -> ToolResult:
         """
         Applies the tool with logging and exception handling, using the given keyword arguments.
-        This method either returns a string result or raises a ToolCallError in case of an error during tool application
+        This method returns text or native MCP content, or raises a ToolCallError in case of an error during tool application
         (but if `catch_exception is enabled, it will return the error message as a string instead of raising the exception).
 
         :param log_call: whether to log the tool call and its result
@@ -361,7 +362,7 @@ class Tool(Component):
             except Exception as e:
                 log.info(f"Failed to get client info: {e}.")
 
-        def task() -> str:
+        def task() -> ToolResult:
             apply_fn = self.get_apply_fn()
 
             try:
@@ -386,7 +387,7 @@ class Tool(Component):
                 if self._is_session_aware:
                     apply_kwargs["session_id"] = session_id
 
-                def execute_apply() -> str:
+                def execute_apply() -> ToolResult:
                     try:
                         call_context.call.check()
                         return apply_fn(**apply_kwargs)
@@ -413,8 +414,9 @@ class Tool(Component):
                 else:
                     result = execute_apply()
 
-                # record tool usage
-                self.agent.record_tool_usage(apply_kwargs, result, self)
+                # record only a textual summary of binary content, never its base64 payload
+                result_summary = ToolResultCodec.summary(result)
+                self.agent.record_tool_usage(apply_kwargs, result_summary, self)
 
             except ToolCallError:
                 raise
@@ -424,7 +426,7 @@ class Tool(Component):
                 raise ToolCallError(msg)
 
             if log_call:
-                log.info(f"Result: {result}")
+                log.info(f"Result: {result_summary}")
 
             try:
                 ls_manager = self.agent.get_language_server_manager()
