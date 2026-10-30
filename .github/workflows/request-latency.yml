@@ -26,15 +26,15 @@ jobs:
         run: |
           python scripts/apply_request_latency.py
           uv sync --locked --extra dev
-          uv run ruff check --fix src/serena/util/shell.py src/serena/util/tool_call.py src/serena/repl/api/shell_api.py src/serena/shared_mcp_calls.py src/serena/shared_mcp_protocol.py src/serena/tools/tools_base.py src/serena/tools/cmd_tools.py test/serena/test_request_latency.py
-          uv run ruff format src/serena/util/shell.py src/serena/util/tool_call.py src/serena/repl/api/shell_api.py src/serena/shared_mcp_calls.py src/serena/shared_mcp_protocol.py src/serena/tools/tools_base.py src/serena/tools/cmd_tools.py test/serena/test_request_latency.py
+          uv run ruff check --fix src/serena/util/shell.py src/serena/util/tool_call.py src/serena/repl/api/shell_api.py src/serena/shared_mcp_calls.py src/serena/shared_mcp_protocol.py src/serena/tools/tools_base.py src/serena/tools/cmd_tools.py test/serena/test_request_latency.py scripts/benchmark_request_latency.py
+          uv run ruff format src/serena/util/shell.py src/serena/util/tool_call.py src/serena/repl/api/shell_api.py src/serena/shared_mcp_calls.py src/serena/shared_mcp_protocol.py src/serena/tools/tools_base.py src/serena/tools/cmd_tools.py test/serena/test_request_latency.py scripts/benchmark_request_latency.py
           git diff --check
       - name: Commit only to the investigation branch
         id: commit
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/serena/util/shell.py src/serena/util/tool_call.py src/serena/repl/api/shell_api.py src/serena/shared_mcp_calls.py src/serena/shared_mcp_protocol.py src/serena/tools/tools_base.py src/serena/tools/cmd_tools.py test/serena/test_request_latency.py
+          git add src/serena/util/shell.py src/serena/util/tool_call.py src/serena/repl/api/shell_api.py src/serena/shared_mcp_calls.py src/serena/shared_mcp_protocol.py src/serena/tools/tools_base.py src/serena/tools/cmd_tools.py test/serena/test_request_latency.py scripts/benchmark_request_latency.py
           if ! git diff --cached --quiet; then
             printf '%s\n' 'perf: bound cancelled shell work and expose request latency' '' '- Preserve bounded shell results instead of losing exit status.' '- Correlate receipt, queueing, execution, and response stages.' '- Keep process ownership and serial edit protection intact.' > /tmp/commit-message.txt
             git commit -F /tmp/commit-message.txt
@@ -63,3 +63,11 @@ jobs:
       - name: Installed-stack regressions
         if: ${{ !cancelled() }}
         run: uv run pytest -q test/serena/test_request_latency.py test/serena/test_mcp_sdk_v2.py test/serena/test_mcp.py test/serena/test_mcp_bridge.py test/serena/test_bridge_recovery.py test/serena/test_raw_file_transport.py test/serena/test_read_file_raw.py test/serena/test_shared_daemon_startup.py test/serena/test_shared_daemon_wsl.py test/serena/test_project_server_port_integration.py test/serena/test_project_server_endpoint.py test/serena/test_daemon_recovery.py test/serena/test_project_server_recovery.py test/serena/test_restart_cli.py --timeout=90 --tb=short
+      - name: Baseline comparison
+        if: ${{ !cancelled() }}
+        run: uv run python scripts/benchmark_request_latency.py | tee latency-benchmark.json
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: latency-${{ matrix.python }}
+          path: latency-benchmark.json
