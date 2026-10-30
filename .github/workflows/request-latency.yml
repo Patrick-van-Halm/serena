@@ -1,13 +1,14 @@
 name: Request latency validation
 on:
   push:
-    branches: [perf/request-to-result-latency]
+    branches: [perf/request-to-result-latency, optimizations]
   pull_request:
     branches: [optimizations]
     paths:
       - 'src/serena/**'
       - 'test/serena/test_request_latency.py'
       - 'scripts/benchmark_request_latency.py'
+      - 'scripts/gen_prompt_factory.py'
       - '.github/workflows/request-latency.yml'
 permissions:
   contents: read
@@ -33,6 +34,12 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install locked application and test dependencies
         run: uv sync --locked --extra dev
+      - name: Verify generated prompt factory
+        run: |
+          uv run python scripts/gen_prompt_factory.py
+          uv run ruff check --fix src/serena/generated/generated_prompt_factory.py
+          uv run ruff format src/serena/generated/generated_prompt_factory.py
+          git diff --exit-code -- src/serena/generated/generated_prompt_factory.py
       - name: Check affected source formatting and lint
         run: |
           uv run ruff check src/serena/util/shell.py src/serena/util/tool_call.py src/serena/repl/api/shell_api.py src/serena/shared_mcp_calls.py src/serena/shared_mcp_protocol.py src/serena/tools/tools_base.py src/serena/tools/cmd_tools.py test/serena/test_request_latency.py scripts/benchmark_request_latency.py

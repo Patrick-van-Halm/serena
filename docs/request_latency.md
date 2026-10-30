@@ -134,7 +134,11 @@ those at the host and correlate tool-call IDs for the full critical path.
 
 Avoid increasing global parallelism or releasing the project guard on timeout:
 these changes can overlap edits and merely move work into contention. This branch
-does not alter model selection, reasoning effort, tool availability, or prompts.
+does not alter model selection, reasoning effort, tool availability, or global
+concurrency. The initial instructions now include small independent read batches,
+scoped searches, focused verification, and reuse of completed command results.
+TPS measurement guidance applies only when a performance investigation is requested;
+profiling is not a prerequisite for ordinary coding work.
 
 ## Reproduction and validation
 
@@ -162,9 +166,10 @@ contain these five-sample medians:
 | 3.13 | 1231.036 ms | 67.524 ms | 94.5% |
 
 The permanent workflow is read-only, checks affected-file lint/formatting, and
-publishes JUnit and benchmark artifacts. One-time source transformation machinery
-has been removed. Benchmark samples are observations, not machine-independent
-performance guarantees.
+publishes JUnit and benchmark artifacts. It also regenerates and checks the prompt
+factory after template changes and runs on pushes to `optimizations` as well as
+the development branch. One-time source transformation machinery has been removed.
+Benchmark samples are observations, not machine-independent performance guarantees.
 
 Native Zed/WSL behavior, the user's actual repository/test commands, and model
 latency are not reproduced by these tests. Normal long-running command time,
