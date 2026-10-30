@@ -23,4 +23,11 @@ edit('src/serena/agno.py', 'from serena.util.exception import show_fatal_excepti
      'from serena.util.exception import show_fatal_exception_safe\nfrom serena.util.tool_result import ToolResult')
 edit('src/serena/agno.py', 'def entrypoint(**kwargs: Any) -> str:', 'def entrypoint(**kwargs: Any) -> ToolResult:')
 edit('test/serena/test_raw_file_transport.py', 'assert result[0].text == original', 'assert result.content[0].text == original')
+edit('src/serena/util/tool_call.py', '        timeout: float,\n        cancellation_handler:',
+     '        timeout: float,  # noqa: ASYNC109 - shared remote execution deadline, also enforced by fail_after below\n        cancellation_handler:')
+edit('test/serena/test_mcp_sdk_v2.py', 'import anyio\n', 'import anyio\nfrom anyio.to_thread import run_sync\n')
+edit('test/serena/test_mcp_sdk_v2.py', '                    while not started.is_set():\n                        await anyio.sleep(0.01)',
+     '                    assert await run_sync(started.wait, 5.0)')
+edit('test/serena/test_mcp_sdk_v2.py', '                    while not stopped.is_set():\n                        await anyio.sleep(0.01)',
+     '                    assert await run_sync(stopped.wait, 5.0)')
 print('SDK follow-up fixes applied.')
