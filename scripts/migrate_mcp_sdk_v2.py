@@ -19,7 +19,8 @@ for path in ('src/serena/mcp_bridge.py', 'src/serena/util/tool_call.py'):
     assert 'import anyio\n' in text
     assert 'anyio.to_thread.run_sync' in text
     target.write_text(text.replace('import anyio\n', 'import anyio\nfrom anyio.to_thread import run_sync\n').replace('anyio.to_thread.run_sync', 'run_sync'))
-edit('src/serena/agno.py', 'from serena.tools import Tool', 'from serena.util.tool_result import ToolResult\nfrom serena.tools import Tool')
+edit('src/serena/agno.py', 'from serena.util.exception import show_fatal_exception_safe',
+     'from serena.util.exception import show_fatal_exception_safe\nfrom serena.util.tool_result import ToolResult')
 edit('src/serena/agno.py', 'def entrypoint(**kwargs: Any) -> str:', 'def entrypoint(**kwargs: Any) -> ToolResult:')
 edit('test/serena/test_raw_file_transport.py', 'assert result[0].text == original', 'assert result.content[0].text == original')
 print('SDK follow-up fixes applied.')
