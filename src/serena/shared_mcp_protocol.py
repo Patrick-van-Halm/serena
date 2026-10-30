@@ -31,6 +31,8 @@ _RUNTIME_FILES = (
     "serena/tools/tools_base.py",
     "serena/tools/raw_file_tools.py",
     "serena/tools/batch_directory_tools.py",
+    "serena/tools/batch_file_tools.py",
+    "serena/agent_workflow/files.py",
     "serena/tools/batch_edit_tools.py",
     "serena/agent_workflow/directories.py",
     "serena/agent_workflow/replacements.py",

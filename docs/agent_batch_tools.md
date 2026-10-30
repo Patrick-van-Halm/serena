@@ -1,10 +1,67 @@
 # Agent batch tools
 
-The feature branch `feat/agent-workflow-tools` contains `list_dirs` and
-`replace_contents`. These are classic MCP tools, available through direct Serena
+Serena provides `read_files`, `list_dirs`, and `replace_contents`. These are classic MCP tools, available through direct Serena
 servers and the shared bridge after updating and restarting their processes.
 They do not replace the existing single-operation tools. The broader agent-workflow
-proposal is not yet fully implemented or merged.
+proposal is not yet fully implemented; this release contains these three batch tools.
+
+## Multiple text-file reads
+
+`read_files` reads up to eight known regular files in one serial, read-only call.
+Each request may specify an inclusive, zero-based line range:
+
+```json
+{
+  "files": [
+    {"relative_path": "package.json"},
+    {"relative_path": "src/api/config.ts", "start_line": 0, "end_line": 79},
+    {"relative_path": "src/frontend/config.ts"}
+  ],
+  "max_chars_per_file": 8000,
+  "max_total_chars": 20000,
+  "max_bytes_per_file": 5242880
+}
+```
+
+Each result retains its request index, requested path/range, text `content`,
+`selected_chars`, `file_sha256`, `text_sha256`, `truncated`, `reasons`, and `error`.
+A missing, denied, undecodable, binary, or oversized file does not discard the
+other results. Empty text and an error are distinguishable. Invalid batch shape
+or limits reject the call before any files are opened.
+
+`start_line` defaults to zero; a negative start counts from the end. `end_line`
+is inclusive, nonnegative, and defaults to null (the rest of the file). Text uses
+the project's configured encoding and normalizes CRLF and CR to LF, matching
+`read_file`. NUL-containing decoded text is rejected; use `read_file_raw` for
+images and other binary files. Encoded JetBrains external-file identifiers are
+not local files and are unsupported; use `read_file` for those identifiers.
+
+The implementation reuses the existing bounded regular-file reader, including
+its path/symlink validation, opened-file identity checks and size bounds. The
+whole file is read before selecting lines. This permits complete-file hashes
+and limits memory use, but means the byte limit applies even to a short range.
+Use the existing streaming `read_file` for targeted ranges in large files.
+`max_bytes_per_file` defaults to 5 MiB and is capped at 20 MiB. No truncated byte
+sequence is decoded. Reads do not constitute a multi-file filesystem snapshot.
+
+`file_sha256` hashes the original bytes actually read. `text_sha256` hashes the
+UTF-8 encoding of the full decoded, newline-normalized text, not just the selected
+range or returned prefix. A file may change after reading, and unsaved editor
+buffers can differ from disk. These values do not prove the current editor state;
+use the replacement preview's version guard for edits.
+
+Returned content is a prefix of the selected range when a limit is reached; that
+prefix can end within a line. `reasons` distinguishes `per_file_limit` and
+`total_limit`. Remaining output space is shared among the remaining files.
+The entire JSON text result, including escaped content and per-file metadata,
+fits `max_total_chars` (2048..200000); this does not include the outer MCP envelope.
+`max_chars_per_file` accepts 1..200000 decoded characters. Budgets too small for
+all request metadata are rejected rather than silently dropping records.
+
+`read_file` must remain enabled in the active context. The REPL's fixed toolset is
+unchanged. Direct MCP and the shared bridge use the same JSON-compatible request
+schema. Runtime fingerprints cover this implementation; the shared protocol
+remains version 7. Update and restart the bridges and daemon together while idle.
 
 ## Multiple directory listings
 
@@ -101,7 +158,7 @@ path. LSP projects explicitly configured with no language servers use Serena's
 existing text reader and atomic single-file writer, respecting project encoding
 and line-ending settings. Backend failures never silently select that path.
 
-The shared protocol remains version 7; runtime fingerprints include both batch
+The shared protocol remains version 7; runtime fingerprints include all three batch
 implementations. Update and restart bridges and the daemon together while idle.
 
 ## Validation scope

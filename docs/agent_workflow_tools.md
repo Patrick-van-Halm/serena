@@ -1,9 +1,11 @@
 # Agent workflow tools
 
-Implementation branch: `feat/agent-workflow-tools`.
+Development branch: `feat/agent-workflow-tools`; integration target: `optimizations`.
 
 ## Implemented
 
+- `read_files`: multiple bounded text-file reads or line ranges, with independent
+  errors, explicit truncation, and separately labelled byte/text hashes.
 - `list_dirs`: multiple bounded directory listings with independent errors.
 - `replace_contents`: different replacements across explicit files, with full
   preflight, dry-run previews, original-content hashes, and partial-write reporting.
@@ -16,12 +18,12 @@ heterogeneous `apply_edits` capability; it is not a generic symbolic-edit transa
 
 ## Remaining proposal scope
 
-The following capabilities are not implemented by this branch yet:
+The following capabilities are not implemented by this release:
 
-- `read_files` and scoped `get_task_context`.
+- Scoped `get_task_context`.
 - Operation status, retained results, managed commands, and structured checks.
 - Bounded/resumable pattern search and structured change inspection.
 - Composed symbol context, memory content search, and transformed image inspection.
 
-The feature branch has not been merged into `optimizations`. Passing the batch-tool
-tests does not establish completion or validation of the remaining proposal.
+Passing the batch-tool tests does not establish completion or validation of the
+remaining proposal.
