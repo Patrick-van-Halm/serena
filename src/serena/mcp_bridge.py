@@ -10,11 +10,10 @@ from typing import Any, cast
 
 import anyio
 import docstring_parser
-from mcp.server.fastmcp.exceptions import ToolError
-from mcp.server.fastmcp.server import Context, FastMCP, Settings
-from mcp.server.fastmcp.tools.base import Tool as FastMCPTool
-from mcp.types import ToolAnnotations
-from pydantic_settings import SettingsConfigDict
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.tools.base import Tool as FastMCPTool
+from mcp_types import ToolAnnotations
 from sensai.util import logging
 
 from serena import __version__
@@ -165,7 +164,7 @@ class BridgeFastMCPTool(FastMCPTool):
 
         title = " ".join(word.capitalize() for word in func_name.split("_"))
         can_edit = tool.can_edit()
-        annotations = ToolAnnotations(title=title, readOnlyHint=not can_edit, destructiveHint=can_edit)
+        annotations = ToolAnnotations(title=title, read_only_hint=not can_edit, destructive_hint=can_edit)
 
         super().__init__(
             fn=execute_fn,
@@ -184,7 +183,7 @@ class BridgeFastMCPTool(FastMCPTool):
         for param_alias, param_name in self._param_aliases.items():
             if param_alias in arguments and param_name not in arguments:
                 arguments[param_name] = arguments.pop(param_alias)
-        return await super().run(arguments, context, convert_result)
+        return await super().run(arguments, context or Context(), convert_result)
 
 
 def _validate_runtime_project_root(requested_root: str, runtime_root: str) -> str:
@@ -248,19 +247,18 @@ class SerenaMCPBridge:
         )
         self._heartbeat_thread.start()
 
-        Settings.model_config = SettingsConfigDict(env_prefix="FASTMCP_")
         binding_instructions = (
             f"\n\nProject binding for this MCP connection: display name={self.project_name!r}, "
             f"canonical root={self.project_root!r}. The canonical root is authoritative. "
             "Git worktrees may share the same project name; never use the name alone to infer "
             "whether this project is active."
         )
-        self.server = FastMCP(
+        self.server = MCPServer(
             name="Serena",
             website_url="https://oraios.github.io/serena",
             instructions=runtime_info.instructions + binding_instructions,
+            version=__version__,
         )
-        self.server._mcp_server.version = __version__
 
         registry = ToolRegistry()
         bridge_agent = _BridgeAgent(self.context)
@@ -293,10 +291,10 @@ class SerenaMCPBridge:
             ),
             annotations=ToolAnnotations(
                 title="Recover Blocked Serena Daemon",
-                readOnlyHint=False,
-                destructiveHint=True,
-                idempotentHint=False,
-                openWorldHint=False,
+                read_only_hint=False,
+                destructive_hint=True,
+                idempotent_hint=False,
+                open_world_hint=False,
             ),
             structured_output=False,
         )

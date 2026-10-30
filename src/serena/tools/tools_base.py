@@ -6,11 +6,10 @@ from abc import ABC
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
-from mcp import Implementation
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata, func_metadata
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.utilities.func_metadata import FuncMetadata, func_metadata
 from sensai.util import logging
 from sensai.util.helper import mark_used
 from sensai.util.string import dict_string
@@ -24,6 +23,7 @@ from serena.prompt_factory import PromptFactory
 from serena.repl.facade import SUCCESS_RESULT
 from serena.util.class_decorators import singleton
 from serena.util.inspection import iter_subclasses
+from serena.util.mcp_context import MCPConnectionIdentity
 from serena.util.text_utils import TextOutputUtils
 from serena.util.tool_call import ToolCall, ToolCallContext, ToolCallInterrupted
 from serena.util.tool_result import ToolResult, ToolResultCodec
@@ -351,10 +351,10 @@ class Tool(Component):
         session_id = session_id_override or "global"
         if mcp_ctx is not None and session_id_override is None:
             try:
-                session_id = "%x" % id(mcp_ctx.session)
+                session_id = MCPConnectionIdentity.session_id(mcp_ctx)
                 client_params = mcp_ctx.session.client_params
                 if client_params is not None:
-                    client_info = cast(Implementation, client_params.clientInfo)
+                    client_info = client_params.client_info
                     client_str = client_info.title if client_info.title else client_info.name + " " + client_info.version
                     if client_str != self.get_last_tool_call_client_str():
                         log.debug(f"Updating client info: {client_info}")

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-from mcp.types import CallToolResult
+from mcp_types import CallToolResult
 
 from serena.util.raw_file import RawFileContent
 

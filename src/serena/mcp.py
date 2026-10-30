@@ -3,7 +3,6 @@ The Serena Model Context Protocol (MCP) Server
 """
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-import sys
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from copy import deepcopy
@@ -11,14 +10,11 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 import docstring_parser
-from mcp.server.fastmcp import server
-from mcp.server.fastmcp.exceptions import ToolError
-from mcp.server.fastmcp.server import Context, FastMCP, Settings
-from mcp.server.fastmcp.tools.base import Tool as FastMCPTool
-from mcp.server.session import ServerSessionT
-from mcp.shared.context import LifespanContextT, RequestT
-from mcp.types import ToolAnnotations
-from pydantic_settings import SettingsConfigDict
+from mcp.server.context import LifespanContextT, RequestT
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.tools.base import Tool as FastMCPTool
+from mcp_types import ToolAnnotations
 from sensai.util import logging
 
 from serena import __version__
@@ -27,7 +23,7 @@ from serena.agent import (
 )
 from serena.config.context_mode import SerenaAgentContext
 from serena.config.serena_config import AgentInterface, LanguageBackend, ModeSelectionDefinition, SerenaConfig
-from serena.constants import DEFAULT_CONTEXT, SERENA_LOG_FORMAT
+from serena.constants import DEFAULT_CONTEXT
 from serena.tools import Tool, ToolCallError
 from serena.util.exception import show_fatal_exception_safe
 from serena.util.logging import MemoryLogHandler
@@ -36,16 +32,6 @@ from serena.util.tool_result import ToolResult
 
 log = logging.getLogger(__name__)
 
-
-def configure_logging(*args, **kwargs) -> None:
-    # We only do something here if logging has not yet been configured.
-    # Normally, logging is configured in the MCP server startup script.
-    if not logging.is_enabled():
-        logging.basicConfig(level=logging.INFO, stream=sys.stderr, format=SERENA_LOG_FORMAT)
-
-
-# patch the logging configuration function in fastmcp, because it's hard-coded and broken
-server.configure_logging = configure_logging  # type: ignore
 
 
 @dataclass
@@ -114,8 +100,8 @@ class SerenaFastMCPTool(FastMCPTool):
         can_edit = tool.can_edit()
         annotations = ToolAnnotations(
             title=tool_title,
-            readOnlyHint=not can_edit,
-            destructiveHint=can_edit,
+            read_only_hint=not can_edit,
+            destructive_hint=can_edit,
         )
 
         super().__init__(
@@ -137,7 +123,7 @@ class SerenaFastMCPTool(FastMCPTool):
     async def run(
         self,
         arguments: dict[str, Any],
-        context: Context[ServerSessionT, LifespanContextT, RequestT] | None = None,
+        context: Context[LifespanContextT, RequestT] | None = None,
         convert_result: bool = False,
     ) -> Any:
         # apply parameter aliases
@@ -145,7 +131,7 @@ class SerenaFastMCPTool(FastMCPTool):
             if param_alias in arguments and param_name not in arguments:
                 arguments[param_name] = arguments.pop(param_alias)
 
-        return await super().run(arguments, context, convert_result)
+        return await super().run(arguments, context or Context(), convert_result)
 
 
 class SerenaMCPFactory:
@@ -298,7 +284,7 @@ class SerenaMCPFactory:
         yield from self.agent.get_exposed_tool_instances()
 
     # noinspection PyProtectedMember
-    def _set_mcp_tools(self, mcp: FastMCP, openai_tool_compatible: bool, structured_output: bool | None) -> None:
+    def _set_mcp_tools(self, mcp: MCPServer, openai_tool_compatible: bool, structured_output: bool | None) -> None:
         """
         Update the tools in the MCP server
 
@@ -327,8 +313,6 @@ class SerenaMCPFactory:
 
     def create_mcp_server(
         self,
-        host: str = "127.0.0.1",
-        port: int = 8000,
         mode_selection_def: ModeSelectionDefinition | None = None,
         language_backend: LanguageBackend | None = None,
         agent_interface: AgentInterface | None = None,
@@ -339,12 +323,10 @@ class SerenaMCPFactory:
         trace_lsp_communication: bool | None = None,
         tool_timeout: float | None = None,
         project_activation_error: str | None = None,
-    ) -> FastMCP:
+    ) -> MCPServer:
         """
-        Create an MCP server with process-isolated SerenaAgent to prevent asyncio contamination.
+        Create an MCP server with Serena tool dispatch offloaded from its event loop.
 
-        :param host: The host to bind to
-        :param port: The port to bind to
         :param mode_selection_def: the mode selection definition to apply
         :param language_backend: the language backend to use, overriding the configuration setting.
         :param agent_interface: the agent interface to use, overriding the configuration setting.
@@ -386,31 +368,23 @@ class SerenaMCPFactory:
             show_fatal_exception_safe(e)
             raise
 
-        # Override model_config to disable the use of `.env` files for reading settings, because user projects are likely to contain
-        # `.env` files (e.g. containing LOG_LEVEL) that are not supposed to override the MCP settings;
-        # retain only FASTMCP_ prefix for already set environment variables.
-        Settings.model_config = SettingsConfigDict(env_prefix="FASTMCP_")
         instructions = self._get_initial_instructions()
         log.info("MCP server initial instructions:\n%s", instructions)
-        mcp = FastMCP(
+        mcp = MCPServer(
             name="Serena",
             lifespan=self.server_lifespan,
             website_url="https://oraios.github.io/serena",
-            host=host,
-            port=port,
+            version=__version__,
             instructions=instructions,
         )
-        # FastMCP currently falls back to the installed mcp SDK version when no version is set.
-        # Set the low-level server value explicitly so MCP clients identify Serena correctly.
-        mcp._mcp_server.version = __version__
         return mcp
 
     @asynccontextmanager
-    async def server_lifespan(self, mcp_server: FastMCP) -> AsyncIterator[None]:
+    async def server_lifespan(self, mcp_server: MCPServer) -> AsyncIterator[None]:
         """
         Manages the lifespan of MCP server instances and performs necessary setup and teardown.
         For stdio transport, there is a single server instance.
-        For other transports, this is called once per connection!
+        For HTTP transports, the SDK enters the lifespan once at server startup.
 
         :param mcp_server: the MCP server instance to configure
         """
