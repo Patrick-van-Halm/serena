@@ -1,0 +1,28 @@
+name: MCP SDK validation
+
+on:
+  push:
+    branches: [upgrade/mcp-sdk-2.3.0]
+  pull_request:
+    branches: [optimizations]
+
+permissions:
+  contents: read
+
+jobs:
+  sdk-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+      - name: Audit MCP integration points
+        run: |
+          git grep -n -E 'from mcp|import mcp|fastmcp|pydantic_settings|clientInfo|isError|mimeType|readOnlyHint|structuredContent' -- '*.py' || true
+      - name: Verify stable SDK installation
+        run: |
+          uv venv /tmp/mcp-sdk-check
+          uv pip install --python /tmp/mcp-sdk-check/bin/python 'mcp==2.3.0' pytest
+          /tmp/mcp-sdk-check/bin/python -c 'from importlib.metadata import version; from mcp.server import MCPServer; print("Installed MCP", version("mcp")); print(MCPServer("Serena migration check"))'
