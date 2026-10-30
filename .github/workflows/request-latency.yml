@@ -1,0 +1,65 @@
+name: Request latency validation
+on:
+  push:
+    branches: [perf/request-to-result-latency, optimizations]
+  pull_request:
+    branches: [optimizations]
+    paths:
+      - 'src/serena/**'
+      - 'test/serena/test_request_latency.py'
+      - 'scripts/benchmark_request_latency.py'
+      - 'scripts/gen_prompt_factory.py'
+      - '.github/workflows/request-latency.yml'
+permissions:
+  contents: read
+concurrency:
+  group: request-latency-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    name: Request latency / Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install locked application and test dependencies
+        run: uv sync --locked --extra dev
+      - name: Verify generated prompt factory
+        run: |
+          uv run python scripts/gen_prompt_factory.py
+          uv run ruff check --fix src/serena/generated/generated_prompt_factory.py
+          uv run ruff format src/serena/generated/generated_prompt_factory.py
+          git diff --exit-code -- src/serena/generated/generated_prompt_factory.py
+      - name: Check affected source formatting and lint
+        run: |
+          uv run ruff check src/serena/util/shell.py src/serena/util/tool_call.py src/serena/repl/api/shell_api.py src/serena/shared_mcp_calls.py src/serena/shared_mcp_protocol.py src/serena/tools/tools_base.py src/serena/tools/cmd_tools.py test/serena/test_request_latency.py scripts/benchmark_request_latency.py
+          uv run ruff format --check src/serena/util/shell.py src/serena/util/tool_call.py src/serena/repl/api/shell_api.py src/serena/shared_mcp_calls.py src/serena/shared_mcp_protocol.py src/serena/tools/tools_base.py src/serena/tools/cmd_tools.py test/serena/test_request_latency.py scripts/benchmark_request_latency.py
+          git diff --check
+      - name: Type check application and tests
+        run: uv run poe type-check
+      - name: Installed-stack regressions
+        if: ${{ !cancelled() }}
+        run: uv run pytest -q test/serena/test_request_latency.py test/serena/test_mcp_sdk_v2.py test/serena/test_mcp.py test/serena/test_mcp_bridge.py test/serena/test_bridge_recovery.py test/serena/test_raw_file_transport.py test/serena/test_read_file_raw.py test/serena/test_shared_daemon_startup.py test/serena/test_shared_daemon_wsl.py test/serena/test_project_server_port_integration.py test/serena/test_project_server_endpoint.py test/serena/test_daemon_recovery.py test/serena/test_project_server_recovery.py test/serena/test_restart_cli.py --timeout=90 --tb=short --junitxml=latency-tests.xml
+      - name: Baseline comparison
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run python scripts/benchmark_request_latency.py | tee latency-benchmark.json
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: latency-${{ matrix.python }}
+          path: |
+            latency-benchmark.json
+            latency-tests.xml

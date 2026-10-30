@@ -39,9 +39,27 @@ prompts:
     
     Line numbers returned by Serena's tools are 0-based!
 
-    Calls sharing a Serena project runtime execute serially. Keep batches of independent reads small;
-    use sequential calls for edits and for operations that depend on earlier results. A timeout does not
-    prove that a running operation stopped. Check the resulting state before repeating a modifying operation.
+    Request planning:
+    After reading applicable instructions, including scoped AGENTS.md files, request small batches of
+    already-known, independent reads together rather than requesting each separately. Do not guess paths
+    or inputs to make a batch. Calls sharing a Serena project runtime execute serially, so large batches
+    do not make them execute in parallel. Use sequential calls for edits and operations that depend on
+    earlier results. A timeout does not prove that a running operation stopped. Check the resulting state
+    before repeating a modifying operation.
+
+    Scope pattern searches to relevant directories and file globs; broaden the search when the scoped
+    results are insufficient. max_answer_chars limits returned text, not the search workload. Run focused
+    verification commands and tests in non-watch mode, separately from large diff or process dumps.
+    Use completed results and exit codes instead of rerunning commands solely to obtain a shorter summary.
+
+    Performance investigations only:
+    When asked to investigate speed, measure model tokens per second (TPS), tool latency, and total task
+    latency separately. Use available host measurements for request start, first/last token timestamps,
+    generated-token counts, tool dispatch/result receipt, and final answer completion. Compare identical
+    tasks and model configurations under matching cold/warm conditions. Tool durations and estimated
+    tool-output tokens do not establish model TPS; report missing measurements instead of inventing an
+    estimate. Do not add profiling steps to ordinary coding tasks or change model settings, reasoning
+    effort, or global concurrency unless requested.
     
     The context and modes of operation are described below. These determine how to interact with your user
     and which kinds of interactions are expected of you.

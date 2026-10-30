@@ -2,9 +2,11 @@
 
 import os
 import subprocess
+import time
 
 from pydantic import BaseModel
 
+from serena.util.tool_call import ToolCall, ToolCallContext
 from solidlsp.util.subprocess_util import subprocess_kwargs, terminate_process_tree_with_kill_fallback
 
 
@@ -13,6 +15,38 @@ class ShellCommandResult(BaseModel):
     return_code: int
     cwd: str
     stderr: str | None = None
+
+
+class _ShellProcessWaiter:
+    """Wait for owned shell processes within the caller's remaining deadline."""
+
+    _POLL_SECONDS = 0.1
+
+    def __init__(self, timeout: float | None) -> None:
+        context = ToolCallContext.current()
+        self._call: ToolCall | None = context.call if context is not None else None
+        self._timeout = timeout
+        self._deadline = None if timeout is None else time.monotonic() + timeout
+
+    def check(self) -> None:
+        """Reject cancelled or expired work before spawning or continuing a process."""
+        if self._call is not None:
+            self._call.check()
+        if self._deadline is not None and time.monotonic() >= self._deadline:
+            raise TimeoutError(f"Shell command timed out after {self._timeout} seconds")
+
+    def wait(self, process: subprocess.Popen[str]) -> tuple[str, str | None]:
+        """Drain output while periodically observing cooperative cancellation."""
+        while True:
+            self.check()
+            remaining = None if self._deadline is None else max(0.0, self._deadline - time.monotonic())
+            if self._call is not None:
+                remaining = min(self._POLL_SECONDS, self._call.remaining, remaining if remaining is not None else float("inf"))
+            try:
+                return process.communicate(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                # communicate may be resumed after a timeout without losing captured output
+                self.check()
 
 
 def execute_shell_command(
@@ -24,15 +58,19 @@ def execute_shell_command(
     """
     Execute a shell command and return the output.
 
-    :param command: The command to execute.
-    :param cwd: The working directory to execute the command in. If None, the current working directory will be used.
-    :param capture_stderr: Whether to capture the stderr output.
-    :param timeout: Maximum execution time in seconds. Timed-out process trees are terminated.
-    :return: The output of the command.
+    :param command: the command to execute
+    :param cwd: the working directory; None uses the current working directory
+    :param capture_stderr: whether to capture standard error
+    :param timeout: maximum execution time; an active tool deadline or cancellation may interrupt sooner
+    :return: the command output and exit status
     """
+    # reject expired work before creating any child process
+    waiter = _ShellProcessWaiter(timeout)
+    waiter.check()
     if cwd is None:
         cwd = os.getcwd()
 
+    # isolate the owned process group for descendant-aware cleanup
     popen_kwargs = subprocess_kwargs()
     start_new_session = os.name == "posix"
     if start_new_session:
@@ -54,20 +92,20 @@ def execute_shell_command(
     )
 
     try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as e:
+        stdout, stderr = waiter.wait(process)
+    except BaseException:
+        # finish cleanup before releasing the serial executor's protection
         terminate_process_tree_with_kill_fallback(
             process,
             terminate_timeout=1.0,
             process_name="Shell command",
             process_group_id=process.pid if start_new_session else None,
         )
-        # Drain closed pipes so large partial output buffers are promptly released.
         try:
             process.communicate(timeout=1.0)
         except subprocess.TimeoutExpired:
             pass
-        raise TimeoutError(f"Shell command timed out after {timeout} seconds") from e
+        raise
 
     return ShellCommandResult(stdout=stdout, stderr=stderr, return_code=process.returncode, cwd=cwd)
 

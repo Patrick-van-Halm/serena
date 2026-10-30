@@ -22,6 +22,8 @@ _RUNTIME_FILES = (
     "serena/shared_mcp_client.py",
     "serena/shared_mcp_calls.py",
     "serena/util/tool_call.py",
+    "serena/util/shell.py",
+    "serena/repl/api/shell_api.py",
     "serena/config/serena_config.py",
     "serena/project.py",
     "serena/agent.py",

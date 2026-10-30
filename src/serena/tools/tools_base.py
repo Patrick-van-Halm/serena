@@ -414,6 +414,8 @@ class Tool(Component):
                 else:
                     result = execute_apply()
 
+                call_context.call.trace("apply_finished", tool_name=self.get_name(), session_id=session_id)
+
                 # record only a textual summary of binary content, never its base64 payload
                 result_summary = ToolResultCodec.summary(result)
                 self.agent.record_tool_usage(apply_kwargs, result_summary, self)
@@ -441,6 +443,7 @@ class Tool(Component):
         tool_call_error: ToolCallError
         timeout = self.agent.serena_config.tool_timeout
         call_context = ToolCallContext.current() or ToolCallContext(ToolCall(float(timeout)))
+        call_context.call.trace("tool_received", tool_name=self.get_name(), session_id=session_id)
         try:
             call_context.call.check()
             task_exec = self.agent.issue_task(
@@ -461,6 +464,8 @@ class Tool(Component):
             msg = f"{e.__class__.__name__}: {e}"
             log.error(msg)
             tool_call_error = ToolCallError(msg)
+        finally:
+            call_context.call.trace("tool_wait_finished", tool_name=self.get_name(), session_id=session_id)
         if catch_exceptions:
             return tool_call_error.get_error_message()
         else:
