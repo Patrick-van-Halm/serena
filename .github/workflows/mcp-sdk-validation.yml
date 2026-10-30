@@ -2,60 +2,49 @@ name: MCP SDK validation
 
 on:
   push:
-    branches: [upgrade/mcp-sdk-2.3.0]
+    branches: [optimizations, upgrade/mcp-sdk-2.3.0]
+  pull_request:
+    branches: [optimizations]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: mcp-sdk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  migrate:
-    if: github.ref == 'refs/heads/upgrade/mcp-sdk-2.3.0'
+  validate:
+    name: MCP SDK / Python ${{ matrix.python }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: write
-    outputs:
-      commit: ${{ steps.commit.outputs.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: upgrade/mcp-sdk-2.3.0
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v6
         with:
-          python-version: '3.13'
-      - name: Apply reviewed follow-up fixes
+          python-version: ${{ matrix.python }}
+      - name: Install locked application and test dependencies
+        run: uv sync --locked --extra dev
+      - name: Check migration formatting and lint
         run: |
-          python scripts/migrate_mcp_sdk_v2.py
-          uv sync --locked --extra dev
-          uv run ruff check --fix src/serena/mcp.py src/serena/cli.py src/serena/agno.py src/serena/mcp_bridge.py src/serena/util/tool_call.py test/serena/test_raw_file_transport.py test/serena/test_mcp_sdk_v2.py
-          uv run ruff format src/serena/mcp.py src/serena/cli.py src/serena/agno.py src/serena/mcp_bridge.py src/serena/util/tool_call.py test/serena/test_raw_file_transport.py test/serena/test_mcp_sdk_v2.py
+          uv run ruff check src/serena/mcp.py src/serena/mcp_bridge.py src/serena/util/mcp_context.py test/serena/test_mcp_sdk_v2.py
+          uv run ruff format --check src/serena/mcp.py src/serena/mcp_bridge.py src/serena/util/mcp_context.py test/serena/test_mcp_sdk_v2.py
           git diff --check
-      - name: Commit reviewed source updates to migration branch only
-        id: commit
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src/serena test/serena
-          printf 'fix: align SDK v2 dispatch and result contracts\n\n- Route transport parameters only to HTTP transports.\n- Correct type annotations, imports, and converted-result expectations.\n- Exercise real stdio, error survival, cancellation, and native image output.\n' > /tmp/mcp-commit-message
-          git commit -F /tmp/mcp-commit-message
-          git push origin HEAD:upgrade/mcp-sdk-2.3.0
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-  validate:
-    needs: migrate
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.migrate.outputs.commit }}
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: '3.13'
-      - run: uv sync --locked --extra dev
-      - name: Type check
+      - name: Type check application and tests
         run: uv run poe type-check
-      - name: MCP regression tests
+      - name: Run installed-stack MCP regressions
         if: always()
         run: |
-          uv run pytest -q test/serena/test_mcp.py test/serena/test_mcp_bridge.py test/serena/test_bridge_recovery.py test/serena/test_raw_file_transport.py test/serena/test_read_file_raw.py test/serena/test_shared_daemon_startup.py test/serena/test_shared_daemon_wsl.py test/serena/test_project_server_port_integration.py test/serena/test_project_server_endpoint.py test/serena/test_daemon_recovery.py test/serena/test_project_server_recovery.py test/serena/test_restart_cli.py test/serena/test_mcp_sdk_v2.py --timeout=90 --tb=short
+          uv run pytest -q test/serena/test_mcp.py test/serena/test_mcp_bridge.py test/serena/test_bridge_recovery.py test/serena/test_raw_file_transport.py test/serena/test_read_file_raw.py test/serena/test_shared_daemon_startup.py test/serena/test_shared_daemon_wsl.py test/serena/test_project_server_port_integration.py test/serena/test_project_server_endpoint.py test/serena/test_daemon_recovery.py test/serena/test_project_server_recovery.py test/serena/test_restart_cli.py test/serena/test_mcp_sdk_v2.py --timeout=90 --tb=short --show-capture=no --junitxml=mcp-sdk-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcp-sdk-results-python-${{ matrix.python }}
+          path: mcp-sdk-results.xml

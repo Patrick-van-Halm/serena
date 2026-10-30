@@ -89,9 +89,9 @@ the surfaced tail. Only the child started by that attempt is cleaned up on failu
 or interruption; startup cleanup never discovers a different process to kill.
 
 After installing this update, restart older bridges and the shared daemon together
-when no tool calls are active. The shared protocol is version 5; the build fingerprint includes the endpoint,
-startup, and guarded recovery implementations. Moving to a new
-port does not automatically stop a daemon on the old port.
+when no tool calls are active. The shared protocol is version 7; the build
+fingerprint includes the endpoint, startup, recovery, and installed SDK identity.
+Moving to a new port does not automatically stop a daemon on the old port.
 
 ## Restart from the terminal
 
