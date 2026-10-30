@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-from typing_extensions import NotRequired, TypedDict
+from typing import NotRequired
+
+from typing_extensions import TypedDict
 
 from serena.agent_workflow.directories import DirectoryBatchReader, DirectoryRequest
 from serena.tools.tools_base import Tool
@@ -24,9 +26,9 @@ class ListDirsTool(Tool):
 
         Each item has relative_path, recursive (false), skip_ignored_files (true),
         and max_depth (4). Missing or denied paths return individual errors.
-        Symlinks are reported separately and are not traversed. Listings are not
-        filesystem snapshots. Truncation is explicit; a partial listing does not
-        establish that another file is absent. This operation requires list_dir
+        Discovered symlinks are reported separately and are not traversed. Listings
+        are not filesystem snapshots. Truncation is explicit; a partial listing does
+        not establish that another file is absent. This operation requires list_dir
         to be available in the active tool context.
 
         :param directories: directory paths and optional per-directory traversal settings

@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from serena.util.file_proxy import FileProxy
+from serena.util.file_system import write_file_atomic
 from serena.util.text_utils import ContentReplacer
 from serena.util.tool_call import ToolCallContext
 
@@ -48,7 +50,9 @@ class ReplacementWorkspace(Protocol):
 class ProjectReplacementWorkspace:
     """Project policy and editor-buffer integration for batch replacements."""
 
-    def __init__(self, project: "Project", editor: "CodeEditor"):
+    def __init__(self, project: "Project", editor: "CodeEditor | None"):
+        if editor is None and (not project.language_backend.is_lsp() or project.project_config.language_servers):
+            raise ValueError("A configured language backend requires its editor")
         self._project = project
         self._editor = editor
 
@@ -58,8 +62,6 @@ class ProjectReplacementWorkspace:
             context.call.check()
 
     def resolve(self, relative_path: str) -> str:
-        from serena.util.file_proxy import FileProxy
-
         if self._project.project_config.read_only:
             raise PermissionError("The project is read-only")
         if FileProxy.is_external_path(relative_path):
@@ -75,13 +77,26 @@ class ProjectReplacementWorkspace:
 
     def read(self, path: str) -> str:
         self.resolve(path)
+        if self._editor is None:
+            return FileProxy.from_project_relative_path(self._project, path).get_contents()
         return self._editor.read_file(path)
 
     def validate_content(self, content: str) -> None:
-        content.encode(self._editor.encoding)
+        content.encode(self._project.project_config.encoding)
 
     def write(self, path: str, original: str, updated: str) -> None:
         self.resolve(path)
+        if self._editor is None:
+            if self.read(path) != original:
+                raise ValueError("File changed after preflight; this file was not written")
+            self.check()
+            write_file_atomic(
+                os.path.join(self._project.project_root, path),
+                updated,
+                encoding=self._project.project_config.encoding,
+                newline=self._project.line_ending.newline_str,
+            )
+            return
         with self._editor.edited_file_context(path) as file:
             if file.get_contents() != original:
                 raise ValueError("File changed after preflight; this file was not written")
@@ -138,8 +153,11 @@ class BatchContentReplacer:
         pieces: list[str] = []
         remaining = 2048
         lines = difflib.unified_diff(
-            plan.original.splitlines(keepends=True), plan.updated.splitlines(keepends=True),
-            fromfile=plan.path, tofile=plan.path, n=2,
+            plan.original.splitlines(keepends=True),
+            plan.updated.splitlines(keepends=True),
+            fromfile=plan.path,
+            tofile=plan.path,
+            n=2,
         )
         for line in lines:
             if len(line) > remaining:
@@ -196,7 +214,7 @@ class BatchContentReplacer:
 
         :param replacements: at most 50 replacements across at most 16 files
         :param dry_run: return bounded diffs and content hashes without writing
-        :param max_answer_chars: complete serialized response allowance, 4096..200000
+        :param max_answer_chars: serialized report allowance, 4096..200000
         :return: file outcomes; failed batches raise BatchReplacementError with the same report structure
         """
         if not 1 <= len(replacements) <= 50:
@@ -236,8 +254,9 @@ class BatchContentReplacer:
                 if self._workspace.read(plan.path) != plan.original:
                     raise ValueError("A file changed during preflight")
         except Exception as error:
-            report = self._report(list(plans.values()), "rejected", max_answer_chars, failed_replacement_index=index,
-                                  error=self._error(error))
+            report = self._report(
+                list(plans.values()), "rejected", max_answer_chars, failed_replacement_index=index, error=self._error(error)
+            )
             raise BatchReplacementError(report) from error
 
         # preview without writes, or commit each file once under the existing project guard

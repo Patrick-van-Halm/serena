@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import json
-from typing import Literal
+from typing import Literal, NotRequired
 
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 from serena.tools.tools_base import Tool, ToolMarkerCanEdit
 
@@ -35,6 +35,8 @@ class ReplaceContentsTool(Tool, ToolMarkerCanEdit):
 
         All entries are preflighted before writing; a validation failure changes no
         files. Each changed file is written once through Serena's existing editor.
+        Projects explicitly configured with no LSP servers use Serena's atomic text
+        writer instead; configured backend errors never trigger this path.
         Multi-file writes are NOT atomic. A later failure reports applied, unknown,
         and not_applied files; no rollback or automatic retry occurs. Verify state
         after interrupted or unknown outcomes. The underlying replace_content tool
@@ -42,7 +44,7 @@ class ReplaceContentsTool(Tool, ToolMarkerCanEdit):
 
         :param replacements: explicit replacement objects; different patterns and replacements are supported
         :param dry_run: validate and return bounded diffs without writes
-        :param max_answer_chars: complete response limit, 4096..200000 characters
+        :param max_answer_chars: serialized JSON report limit, 4096..200000 characters
         :return: JSON outcome with per-file status, match counts, and content hashes
         """
         from serena.agent_workflow.replacements import BatchContentReplacer, ProjectReplacementWorkspace, ReplacementRequest
@@ -51,6 +53,8 @@ class ReplaceContentsTool(Tool, ToolMarkerCanEdit):
         if not self.agent.is_tool_function_available(ReplaceContentTool):
             raise ValueError("replace_contents requires replace_content to be enabled in the active context")
         requests = [ReplacementRequest.model_validate(item) for item in replacements]
-        workspace = ProjectReplacementWorkspace(self.project, self.create_code_editor())
+        project = self.project
+        editor = None if project.language_backend.is_lsp() and not project.project_config.language_servers else self.create_code_editor()
+        workspace = ProjectReplacementWorkspace(project, editor)
         report = BatchContentReplacer(workspace).replace(requests, dry_run, max_answer_chars)
         return json.dumps(report, ensure_ascii=False, separators=(",", ":"))
