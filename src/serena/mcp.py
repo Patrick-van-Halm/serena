@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 import docstring_parser
-from mcp.server.context import LifespanContextT, RequestT
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.tools.base import Tool as FastMCPTool
@@ -31,7 +30,6 @@ from serena.util.tool_call import AsyncToolCallRunner
 from serena.util.tool_result import ToolResult
 
 log = logging.getLogger(__name__)
-
 
 
 @dataclass
@@ -123,7 +121,7 @@ class SerenaFastMCPTool(FastMCPTool):
     async def run(
         self,
         arguments: dict[str, Any],
-        context: Context[LifespanContextT, RequestT] | None = None,
+        context: Context | None = None,
         convert_result: bool = False,
     ) -> Any:
         # apply parameter aliases

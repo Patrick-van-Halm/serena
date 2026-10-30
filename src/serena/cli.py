@@ -407,7 +407,10 @@ class TopLevelCommands(AutoRegisteringGroup):
                 project_file,
             )
         log.info("Starting MCP server …")
-        server.run(transport=transport, host=host, port=port)
+        if transport == "stdio":
+            server.run(transport="stdio")
+        else:
+            server.run(transport=transport, host=host, port=port)
 
     @staticmethod
     @click.command(
@@ -437,9 +440,7 @@ class TopLevelCommands(AutoRegisteringGroup):
                 raise click.UsageError("--project-from-cwd cannot be used together with --project")
             project = find_project_root()
             if project is None:
-                raise click.ClickException(
-                    f"No project root found from cwd={os.getcwd()} (no .serena/project.yml or .git found)."
-                )
+                raise click.ClickException(f"No project root found from cwd={os.getcwd()} (no .serena/project.yml or .git found).")
 
         if project is None:
             raise click.UsageError("Pass --project or --project-from-cwd")

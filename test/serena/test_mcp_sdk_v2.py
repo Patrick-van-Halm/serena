@@ -14,6 +14,7 @@ import anyio
 import pytest
 import requests
 import yaml
+from anyio.to_thread import run_sync
 from mcp import Client
 from mcp.client.stdio import StdioServerParameters
 from mcp.server.mcpserver import Context, MCPServer
@@ -52,8 +53,12 @@ def isolated_project(tmp_path: Path):
         port = reservation.getsockname()[1]
     config = yaml.safe_load(Path(SERENA_CONFIG_TEMPLATE_FILE).read_text(encoding="utf-8"))
     config.update(
-        projects=[str(project)], auth_secret="sdk-integration-test-secret", project_server_port=port,
-        web_dashboard=False, gui_log_window=False, tool_timeout=15,
+        projects=[str(project)],
+        auth_secret="sdk-integration-test-secret",
+        project_server_port=port,
+        web_dashboard=False,
+        gui_log_window=False,
+        tool_timeout=15,
         trusted_project_path_patterns=[str(project)],
     )
     (home / "serena_config.yml").write_text(yaml.safe_dump(config), encoding="utf-8")
@@ -72,14 +77,18 @@ def test_stdio_survives_errors_parallel_calls_and_native_images(isolated_project
         if bridge:
             daemon = subprocess.Popen(
                 [sys.executable, "-c", BOOTSTRAP, "start-project-server"],
-                env=fixture.environment, stdin=subprocess.DEVNULL, stdout=daemon_log, stderr=daemon_log,
+                env=fixture.environment,
+                stdin=subprocess.DEVNULL,
+                stdout=daemon_log,
+                stderr=daemon_log,
             )
             deadline = time.monotonic() + 30
             while True:
                 try:
                     response = requests.get(
                         f"http://127.0.0.1:{fixture.port}/heartbeat",
-                        headers={"Authorization": "Bearer sdk-integration-test-secret"}, timeout=0.3,
+                        headers={"Authorization": "Bearer sdk-integration-test-secret"},
+                        timeout=0.3,
                     )
                     if response.ok:
                         break
@@ -198,11 +207,9 @@ def test_serena_wrapper_cancellation_keeps_sdk_connection_usable(mode: str) -> N
 
                 async with anyio.create_task_group() as group:
                     group.start_soon(wait)
-                    while not started.is_set():
-                        await anyio.sleep(0.01)
+                    assert await run_sync(started.wait, 5.0)
                     scope.cancel()
-                    while not stopped.is_set():
-                        await anyio.sleep(0.01)
+                    assert await run_sync(stopped.wait, 5.0)
                 await client.session.send_ping()
                 assert "waiting" in {tool.name for tool in (await client.list_tools()).tools}
 

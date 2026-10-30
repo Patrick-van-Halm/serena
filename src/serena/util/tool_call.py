@@ -19,6 +19,7 @@ from uuid import uuid4
 
 import anyio
 from anyio.lowlevel import RunVar
+from anyio.to_thread import run_sync
 
 log = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -228,7 +229,7 @@ class AsyncToolCallRunner:
     async def run(
         cls,
         function: Callable[[], T],
-        timeout: float,
+        timeout: float,  # noqa: ASYNC109 - shared remote execution deadline, also enforced by fail_after below
         cancellation_handler: ToolCallCancellationHandler | None = None,
         *,
         response_grace: float = 0.0,
@@ -250,7 +251,7 @@ class AsyncToolCallRunner:
         try:
             # include worker-pool admission in the same deadline as remote queueing and execution
             with anyio.fail_after(call.remaining + response_grace):
-                return await anyio.to_thread.run_sync(invoke, abandon_on_cancel=True)
+                return await run_sync(invoke, abandon_on_cancel=True)
         except anyio.get_cancelled_exc_class():
             call.cancel()
             if cancellation_handler is not None and call.outcome != "not_started":
@@ -285,6 +286,6 @@ class AsyncToolCallRunner:
             limiter = anyio.CapacityLimiter(4)
             cls._cancellation_limiter.set(limiter)
         with anyio.move_on_after(2.0, shield=True) as scope:
-            await anyio.to_thread.run_sync(notify, abandon_on_cancel=True, limiter=limiter)
+            await run_sync(notify, abandon_on_cancel=True, limiter=limiter)
         if scope.cancel_called:
             log.warning("Cancellation delivery timed out for tool call %s; outcome unknown", call.request_id)

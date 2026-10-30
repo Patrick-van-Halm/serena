@@ -156,7 +156,9 @@ def test_cross_project_forwarding_preserves_text_and_native_content(raw_agent: A
     wrapped = SerenaFastMCPTool(query, openai_tool_compatible=True, structured_output=structured)
 
     async def run() -> Any:
-        return await wrapped.run({"project_name": "other-project", "tool_name": "read_file_raw", "tool_params_json": "{}"}, convert_result=True)
+        return await wrapped.run(
+            {"project_name": "other-project", "tool_name": "read_file_raw", "tool_params_json": "{}"}, convert_result=True
+        )
 
     result = anyio.run(run)
     if raw:
@@ -164,7 +166,7 @@ def test_cross_project_forwarding_preserves_text_and_native_content(raw_agent: A
         assert isinstance(result.content[1], ImageContent)
         assert base64.b64decode(result.content[1].data) == PNG
     else:
-        assert result[0].text == original
+        assert result.content[0].text == original
 
 
 @pytest.mark.parametrize("blocked", ["inactive", "no-project"])
