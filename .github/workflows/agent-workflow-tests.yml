@@ -1,0 +1,34 @@
+name: Agent workflow regression tests
+on:
+  push:
+    branches: [feat/agent-workflow-tools, optimizations]
+  pull_request:
+    branches: [optimizations]
+permissions:
+  contents: read
+concurrency:
+  group: agent-workflow-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked --extra dev
+      - name: Type checking
+        run: uv run poe type-check
+      - name: Existing MCP and latency regressions
+        run: uv run pytest -q test/serena/test_request_latency.py test/serena/test_mcp_sdk_v2.py --timeout=90
+      - name: Agent workflow regressions
+        if: ${{ hashFiles('test/serena/test_agent_workflow.py') != '' }}
+        run: uv run pytest -q test/serena/test_agent_workflow.py --timeout=90
