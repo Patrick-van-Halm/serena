@@ -394,14 +394,9 @@ class SerenaMCPFactory:
         try:
             yield
         finally:
-            # Shut down the server if we are running in stdio mode.
-            # For other transports, we do nothing; the singleton agent instance remains active.
-            if self.transport == "stdio":
-                log.info("MCP server shutting down")
-                if self.agent is not None:
-                    self.agent.on_shutdown()
-            else:
-                log.info("Client disconnected")
+            # release agent resources when the server lifetime ends, not on individual HTTP disconnects
+            log.info("MCP server shutting down")
+            self.agent.on_shutdown()
 
     def _get_initial_instructions(self) -> str:
         assert self.agent is not None

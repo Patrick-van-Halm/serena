@@ -59,6 +59,7 @@ class BasicTool(BaseMockTool):
         log_call: bool = True,
         catch_exceptions: bool = True,
         mcp_ctx: Context | None = None,
+        session_id_override: str | None = None,
         **kwargs,
     ) -> str:
         """Mock implementation of apply_ex."""

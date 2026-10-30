@@ -23,7 +23,7 @@ from mcp_types import ImageContent, TextContent
 from serena import __version__
 from serena.config.context_mode import SerenaAgentContext
 from serena.config.serena_config import SerenaConfig
-from serena.constants import SERENA_CONFIG_TEMPLATE_FILE
+from serena.constants import SERENA_CONFIG_TEMPLATE_FILE, SERENAS_OWN_CONTEXT_YAMLS_DIR
 from serena.mcp import SerenaFastMCPTool
 from serena.tools import Tool, ToolCallError
 from serena.util.mcp_context import MCPConnectionIdentity
@@ -48,6 +48,11 @@ def isolated_project(tmp_path: Path):
     (project / "image.png").write_bytes(PNG)
     home = tmp_path / "home"
     home.mkdir()
+    # enable filesystem operations only in this test home, preserving production context policy
+    context = yaml.safe_load(Path(SERENAS_OWN_CONTEXT_YAMLS_DIR, "codex.yml").read_text(encoding="utf-8"))
+    context["excluded_tools"] = []
+    (home / "contexts").mkdir()
+    (home / "contexts" / "codex.yml").write_text(yaml.safe_dump(context), encoding="utf-8")
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
@@ -135,7 +140,8 @@ def test_stdio_survives_errors_parallel_calls_and_native_images(isolated_project
                     assert not listing.is_error and "hello.txt" in text_of(listing)
                     shell = await client.call_tool("execute_shell_command", {"command": "echo sdk-shell-ok"})
                     assert not shell.is_error and "sdk-shell-ok" in text_of(shell)
-                    await client.session.send_ping()
+                    if mode == "legacy":
+                        await client.session.send_ping()
                     assert "read_file_raw" in {tool.name for tool in (await client.list_tools()).tools}
 
         anyio.run(exercise)
@@ -182,7 +188,14 @@ def test_serena_wrapper_cancellation_keeps_sdk_connection_usable(mode: str) -> N
             """Wait until this operation is cancelled."""
             return "unused"
 
-        def apply_ex(self, **kwargs) -> str:
+        def apply_ex(
+            self,
+            log_call: bool = True,
+            catch_exceptions: bool = True,
+            mcp_ctx: Context | None = None,
+            session_id_override: str | None = None,
+            **kwargs,
+        ) -> str:
             call = ToolCallContext.current().call
             started.set()
             try:
@@ -210,7 +223,97 @@ def test_serena_wrapper_cancellation_keeps_sdk_connection_usable(mode: str) -> N
                     assert await run_sync(started.wait, 5.0)
                     scope.cancel()
                     assert await run_sync(stopped.wait, 5.0)
-                await client.session.send_ping()
+                if mode == "legacy":
+                    await client.session.send_ping()
                 assert "waiting" in {tool.name for tool in (await client.list_tools()).tools}
+
+    anyio.run(exercise)
+
+
+@pytest.mark.parametrize("transport,mode", [("streamable-http", "legacy"), ("streamable-http", "auto"), ("sse", "legacy")])
+def test_http_cli_binds_requested_endpoint_and_survives_client_disconnect(isolated_project, transport: str, mode: str) -> None:
+    """Serve real HTTP clients on the explicit port without reading project .env settings."""
+    from mcp.client.sse import sse_client
+
+    fixture = isolated_project
+    (fixture.project / ".env").write_text("FASTMCP_HOST=invalid.example\nFASTMCP_PORT=1\nLOG_LEVEL=INVALID\n", encoding="utf-8")
+    with (fixture.home / "http-test.log").open("w+", encoding="utf-8") as output:
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                BOOTSTRAP,
+                "start-mcp-server",
+                "--project",
+                str(fixture.project),
+                "--context",
+                "codex",
+                "--transport",
+                transport,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(fixture.port),
+            ],
+            env=fixture.environment,
+            cwd=fixture.project,
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=output,
+        )
+        try:
+            deadline = time.monotonic() + 30
+            while True:
+                try:
+                    with socket.create_connection(("127.0.0.1", fixture.port), timeout=0.2):
+                        break
+                except OSError:
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        output.seek(0)
+                        pytest.fail(f"HTTP server did not start: {output.read()}")
+                    time.sleep(0.05)
+
+            async def exercise() -> None:
+                with anyio.fail_after(30):
+                    # connect twice: closing one HTTP client must not shut down the shared server agent
+                    for _ in range(2):
+                        origin = f"http://127.0.0.1:{fixture.port}"
+                        target = sse_client(origin + "/sse") if transport == "sse" else origin + "/mcp"
+                        async with Client(target, mode=mode, read_timeout_seconds=10) as client:
+                            assert client.server_info.version == __version__
+                            assert "read_file" in {tool.name for tool in (await client.list_tools()).tools}
+                            missing = await client.call_tool("read_file", {"relative_path": "missing-file.txt"})
+                            assert missing.is_error
+                            good = await client.call_tool("read_file", {"relative_path": "hello.txt"})
+                            assert not good.is_error and "SDK migration works" in text_of(good)
+
+            anyio.run(exercise)
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("transport", ["stdio", "sse", "streamable-http"])
+def test_agent_resources_released_at_server_lifetime_end(transport: str) -> None:
+    """All SDK server transports release their owned agent only when their lifespan exits."""
+    from unittest.mock import Mock
+
+    from serena.mcp import SerenaMCPFactory
+
+    agent = Mock()
+    agent.get_context.return_value = SerenaAgentContext.from_name("codex")
+    agent.get_exposed_tool_instances.return_value = []
+    factory = SerenaMCPFactory(transport=transport, context="codex")
+    factory.agent = agent
+    server = MCPServer("lifetime-test")
+
+    async def exercise() -> None:
+        async with factory.server_lifespan(server):
+            agent.on_shutdown.assert_not_called()
+        agent.on_shutdown.assert_called_once_with()
 
     anyio.run(exercise)
