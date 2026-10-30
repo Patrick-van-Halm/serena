@@ -1,0 +1,36 @@
+name: Request latency investigation
+on:
+  workflow_dispatch:
+  push:
+    branches: [investigate/request-to-result-latency]
+permissions:
+  contents: read
+jobs:
+  investigate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked --extra dev
+      - name: Check investigation scripts
+        run: |
+          uv run ruff check scripts/latency
+          uv run ruff format --check scripts/latency
+          uv run python -m unittest discover -s scripts/latency -p 'test_*.py' -v
+      - name: Analyze supplied observations
+        run: uv run python scripts/latency/analyze.py docs/performance/request_latency_observations.json > latency-summary.json
+      - name: Probe shell cancellation with installed application components
+        run: uv run python scripts/latency/probe_shell_cancellation.py > shell-cancellation-probe.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: request-latency-${{ matrix.python }}
+          path: |
+            latency-summary.json
+            shell-cancellation-probe.json
