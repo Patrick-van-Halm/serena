@@ -407,10 +407,15 @@ class TopLevelCommands(AutoRegisteringGroup):
                 project_file,
             )
         log.info("Starting MCP server …")
-        if transport == "stdio":
-            server.run(transport="stdio")
-        else:
-            server.run(transport=transport, host=host, port=port)
+        try:
+            if transport == "stdio":
+                server.run(transport="stdio")
+            else:
+                server.run(transport=transport, host=host, port=port)
+        finally:
+            # the SDK enters legacy SSE lifespans per connection, so the process owner cleans up
+            if transport == "sse" and factory.agent is not None:
+                factory.agent.on_shutdown()
 
     @staticmethod
     @click.command(

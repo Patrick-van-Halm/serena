@@ -382,7 +382,7 @@ class SerenaMCPFactory:
         """
         Manages the lifespan of MCP server instances and performs necessary setup and teardown.
         For stdio transport, there is a single server instance.
-        For HTTP transports, the SDK enters the lifespan once at server startup.
+        Streamable HTTP enters once at server startup; legacy SSE enters once per connection.
 
         :param mcp_server: the MCP server instance to configure
         """
@@ -394,9 +394,10 @@ class SerenaMCPFactory:
         try:
             yield
         finally:
-            # release agent resources when the server lifetime ends, not on individual HTTP disconnects
-            log.info("MCP server shutting down")
-            self.agent.on_shutdown()
+            # legacy SSE enters this lifespan per connection; its CLI owner handles final shutdown
+            if self.transport != "sse":
+                log.info("MCP server shutting down")
+                self.agent.on_shutdown()
 
     def _get_initial_instructions(self) -> str:
         assert self.agent is not None

@@ -299,7 +299,7 @@ def test_http_cli_binds_requested_endpoint_and_survives_client_disconnect(isolat
 
 @pytest.mark.parametrize("transport", ["stdio", "sse", "streamable-http"])
 def test_agent_resources_released_at_server_lifetime_end(transport: str) -> None:
-    """All SDK server transports release their owned agent only when their lifespan exits."""
+    """SSE connection teardown preserves the agent; server-scoped lifespans release it."""
     from unittest.mock import Mock
 
     from serena.mcp import SerenaMCPFactory
@@ -314,6 +314,9 @@ def test_agent_resources_released_at_server_lifetime_end(transport: str) -> None
     async def exercise() -> None:
         async with factory.server_lifespan(server):
             agent.on_shutdown.assert_not_called()
-        agent.on_shutdown.assert_called_once_with()
+        if transport == "sse":
+            agent.on_shutdown.assert_not_called()
+        else:
+            agent.on_shutdown.assert_called_once_with()
 
     anyio.run(exercise)
