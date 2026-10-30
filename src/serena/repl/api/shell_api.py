@@ -3,6 +3,7 @@
 The implementation of shell command execution.
 """
 
+import json
 import os.path
 from typing import TYPE_CHECKING
 
@@ -47,8 +48,52 @@ class ShellCommandOutput(RepresentableViaRenderer):
 
 
 class ShellCommandOutputRenderer(Renderer[ShellCommandOutput]):
+    """Preserve exit status and useful excerpts when complete shell output will not fit."""
+
+    @staticmethod
+    def _excerpt(text: str | None, retained: int) -> str | None:
+        if text is None or len(text) <= retained:
+            return text
+        if retained == 0:
+            return ""
+        head = retained // 3
+        tail = retained - head
+        return text[:head] + "\n... output omitted ...\n" + text[-tail:]
+
+    def _preview(self, result: ShellCommandResult) -> str:
+        # fit serialized JSON rather than estimating unescaped string length
+        limit = self._get_max_answer_chars()
+        stdout_count = len(result.stdout)
+        stderr_count = len(result.stderr or "")
+
+        def encode(retained: int) -> str:
+            stdout_budget = min(stdout_count, retained // 2)
+            stderr_budget = min(stderr_count, retained - stdout_budget)
+            stdout_budget = min(stdout_count, retained - stderr_budget)
+            payload = result.model_dump()
+            payload.update(
+                stdout=self._excerpt(result.stdout, stdout_budget),
+                stderr=self._excerpt(result.stderr, stderr_budget),
+                output_truncated=True,
+                stdout_original_chars=stdout_count,
+                stderr_original_chars=stderr_count,
+            )
+            return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+        low, high = 0, max(0, min(limit, stdout_count + stderr_count))
+        best = encode(0)
+        while low <= high:
+            retained = (low + high) // 2
+            candidate = encode(retained)
+            if len(candidate) <= limit:
+                best = candidate
+                low = retained + 1
+            else:
+                high = retained - 1
+        return best
+
     def render(self, obj: ShellCommandOutput) -> str:
-        return self._limit_length(obj.result_.model_dump_json())
+        return self._limit_length(obj.result_.model_dump_json(), [lambda: self._preview(obj.result_)])
 
 
 class ShellApi(FacadeApi):

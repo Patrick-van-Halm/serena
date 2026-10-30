@@ -39,7 +39,7 @@ class CancellationBenchmark:
         while not marker.exists():
             if time.monotonic() >= deadline:
                 raise TimeoutError("Benchmark subprocess did not start")
-            time.sleep(.005)
+            time.sleep(0.005)
         start = time.monotonic()
         call.cancel()
         following = executor.issue_task(time.monotonic, logged=False)

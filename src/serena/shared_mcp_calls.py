@@ -45,6 +45,7 @@ class SharedMCPCalls:
         """Admit an operation once, interpreting a wire deadline as UTC epoch seconds."""
         timeout = self._max_timeout if deadline is None else min(self._max_timeout, max(0.0, deadline - time.time()))
         call = ToolCall(timeout, request_id)
+        call.trace("daemon_received", session_id=session_id)
         call.check()
         key = (session_id, request_id)
         with self._lock:

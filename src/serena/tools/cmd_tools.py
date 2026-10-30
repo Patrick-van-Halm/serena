@@ -46,9 +46,9 @@ class ExecuteShellCommandTool(Tool, ToolMarkerCanEdit, ShellApiMixin):
         :param command: the shell command to execute
         :param cwd: the working directory to execute the command in. If None, the project root will be used.
         :param capture_stderr: whether to capture and return stderr output
-        :param max_answer_chars: if the output is longer than this number of characters,
-            no content will be returned. -1 means using the default value, don't adjust unless there is no other way to get the content
-            required for the task.
+        :param max_answer_chars: maximum response length; -1 uses the configured default.
+            Oversized output is shortened to marked excerpts while retaining the exit status and working directory
+            whenever that metadata fits. Do not rerun a command solely because its output was shortened.
         :return: a JSON object containing the command's stdout and optionally stderr output
         """
         return self._api().execute_shell_command(command, cwd, capture_stderr, max_answer_chars).represent()

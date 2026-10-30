@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -56,12 +58,34 @@ class ToolCall:
         if not math.isfinite(timeout) or timeout < 0:
             raise ValueError("Tool-call timeout must be finite and non-negative")
         self.request_id = request_id or uuid4().hex
-        self._deadline = time.monotonic() + timeout
+        self._created_at = time.monotonic()
+        self._deadline = self._created_at + timeout
+        self._trace_enabled = os.environ.get("SERENA_TRACE_TOOL_LATENCY", "").lower() in {"1", "true", "yes"}
+        self._trace_span = uuid4().hex if self._trace_enabled else ""
         self._lock = threading.Lock()
         self._cancelled = False
         self._started = False
         self._finished = False
         self._succeeded = False
+
+    def trace(self, event: str, *, tool_name: str | None = None, session_id: str | None = None) -> None:
+        """Emit opt-in timing metadata without tool arguments, content, or exception messages."""
+        if not self._trace_enabled:
+            return
+        record = {
+            "event": event,
+            "request_id": self.request_id,
+            "span_id": self._trace_span,
+            "pid": os.getpid(),
+            "elapsed_ms": round((time.monotonic() - self._created_at) * 1000, 3),
+            "remaining_ms": round(self.remaining * 1000, 3),
+            "local_outcome": self.outcome,
+        }
+        if tool_name is not None:
+            record["tool"] = tool_name
+        if session_id is not None:
+            record["session_id"] = session_id
+        log.info("Tool latency: %s", json.dumps(record, separators=(",", ":")))
 
     @property
     def remaining(self) -> float:
@@ -123,11 +147,13 @@ class ToolCall:
                 raise RuntimeError(f"Tool call {self.request_id} was already dispatched")
             self._started = True
 
+        self.trace("executor_dequeued")
         try:
             # expose the call to cooperative downstream operations without inheriting its guard
             with ToolCallContext(self).activate():
                 with guard if guard is not None else nullcontext():
                     self.check()
+                    self.trace("execution_started")
                     result = function()
             with self._lock:
                 self._succeeded = True
@@ -135,6 +161,7 @@ class ToolCall:
         finally:
             with self._lock:
                 self._finished = True
+            self.trace("execution_finished")
 
     def wait(self, future: Future[T]) -> T:
         """Wait within the original deadline, cancelling queued work on interruption."""
@@ -237,12 +264,14 @@ class AsyncToolCallRunner:
         if not math.isfinite(response_grace) or response_grace < 0:
             raise ValueError("Response grace must be finite and non-negative")
         call = ToolCall(timeout)
+        call.trace("mcp_received")
 
         def invoke() -> T:
             if not cls._slots.acquire(blocking=False):
                 raise ToolCallBusyError("Serena is busy; the operation was not submitted. Reduce concurrent tool calls.")
             try:
                 call.check()
+                call.trace("worker_admitted")
                 with ToolCallContext(call).activate():
                     return function()
             finally:
@@ -265,6 +294,8 @@ class AsyncToolCallRunner:
                 await cls._cancel_remote(cancellation_handler, call)
             call.check()
             raise
+        finally:
+            call.trace("mcp_finished")
 
     @classmethod
     async def _cancel_remote(cls, handler: ToolCallCancellationHandler, call: ToolCall) -> None:

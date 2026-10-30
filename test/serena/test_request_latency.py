@@ -24,7 +24,10 @@ from serena.task_executor import TaskExecutor
 from serena.util.shell import ShellCommandResult, execute_shell_command
 from serena.util.tool_call import AsyncToolCallRunner, ToolCall, ToolCallContext, ToolCallInterrupted
 
-from .test_mcp_sdk_v2 import BOOTSTRAP, isolated_project as isolated_project, text_of
+from .test_mcp_sdk_v2 import BOOTSTRAP, text_of
+from .test_mcp_sdk_v2 import isolated_project as _isolated_project
+
+isolated_project = _isolated_project
 
 
 def _command(source: str) -> str:
@@ -131,16 +134,28 @@ def test_timing_records_distinguish_waiting_execution_and_response_without_paylo
                 call = ToolCallContext.current().call
                 call.trace("tool_received", tool_name="test_read", session_id="test-session")
                 return call.execute(lambda: "private-output", guard)
+
             assert await AsyncToolCallRunner.run(operation, timeout=5) == "private-output"
+
         async with anyio.create_task_group() as tasks:
             tasks.start_soon(invoke)
             await anyio.sleep(0.15)
             guard.release()
 
     anyio.run(exercise)
-    records = [json.loads(r.getMessage().split("Tool latency: ", 1)[1]) for r in caplog.records if r.getMessage().startswith("Tool latency: ")]
+    records = [
+        json.loads(r.getMessage().split("Tool latency: ", 1)[1]) for r in caplog.records if r.getMessage().startswith("Tool latency: ")
+    ]
     by_event = {record["event"]: record for record in records}
-    assert {"mcp_received", "worker_admitted", "tool_received", "executor_dequeued", "execution_started", "execution_finished", "mcp_finished"} <= by_event.keys()
+    assert {
+        "mcp_received",
+        "worker_admitted",
+        "tool_received",
+        "executor_dequeued",
+        "execution_started",
+        "execution_finished",
+        "mcp_finished",
+    } <= by_event.keys()
     assert by_event["execution_started"]["elapsed_ms"] > by_event["executor_dequeued"]["elapsed_ms"]
     assert len({record["request_id"] for record in records}) == 1
     assert "private-output" not in json.dumps(records)
@@ -155,30 +170,45 @@ def test_stdio_cancellation_allows_next_read(isolated_project, bridge: bool) -> 
     daemon_log = (fixture.home / "latency-daemon.log").open("w+", encoding="utf-8")
     try:
         if bridge:
-            daemon = subprocess.Popen([sys.executable, "-c", BOOTSTRAP, "start-project-server"], env=fixture.environment,
-                                      stdin=subprocess.DEVNULL, stdout=daemon_log, stderr=daemon_log)
+            daemon = subprocess.Popen(
+                [sys.executable, "-c", BOOTSTRAP, "start-project-server"],
+                env=fixture.environment,
+                stdin=subprocess.DEVNULL,
+                stdout=daemon_log,
+                stderr=daemon_log,
+            )
             deadline = time.monotonic() + 20
             while True:
                 try:
-                    response = requests.get(f"http://127.0.0.1:{fixture.port}/heartbeat", headers={"Authorization": "Bearer sdk-integration-test-secret"}, timeout=.2)
+                    response = requests.get(
+                        f"http://127.0.0.1:{fixture.port}/heartbeat",
+                        headers={"Authorization": "Bearer sdk-integration-test-secret"},
+                        timeout=0.2,
+                    )
                     if response.ok:
                         break
                 except requests.RequestException:
                     pass
                 if daemon.poll() is not None or time.monotonic() >= deadline:
                     pytest.fail("Owned test daemon failed to start")
-                time.sleep(.05)
+                time.sleep(0.05)
         command = "start-mcp-bridge" if bridge else "start-mcp-server"
-        params = StdioServerParameters(command=sys.executable, args=["-c", BOOTSTRAP, command, "--project", str(fixture.project), "--context", "codex"], env=fixture.environment)
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-c", BOOTSTRAP, command, "--project", str(fixture.project), "--context", "codex"],
+            env=fixture.environment,
+        )
         source = f"from pathlib import Path; import time; Path({str(marker)!r}).touch(); time.sleep(10)"
 
         async def exercise() -> None:
             with anyio.fail_after(30):
                 async with Client(params, mode="legacy", read_timeout_seconds=20) as client:
                     scope = anyio.CancelScope()
+
                     async def slow() -> None:
                         with scope:
                             await client.call_tool("execute_shell_command", {"command": _command(source)})
+
                     async with anyio.create_task_group() as tasks:
                         tasks.start_soon(slow)
                         await run_sync(_await_file, marker)
@@ -186,6 +216,7 @@ def test_stdio_cancellation_allows_next_read(isolated_project, bridge: bool) -> 
                     with anyio.fail_after(4):
                         result = await client.call_tool("read_file", {"relative_path": "hello.txt"})
                     assert not result.is_error and "SDK migration works" in text_of(result)
+
         anyio.run(exercise)
     finally:
         if daemon is not None:
