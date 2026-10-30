@@ -93,7 +93,14 @@ class ShellCommandOutputRenderer(Renderer[ShellCommandOutput]):
         return best
 
     def render(self, obj: ShellCommandOutput) -> str:
-        return self._limit_length(obj.result_.model_dump_json(), [lambda: self._preview(obj.result_)])
+        full = obj.result_.model_dump_json()
+        limit = self._get_max_answer_chars()
+        if 0 < limit < len(full):
+            preview = self._preview(obj.result_)
+            if len(preview) <= limit:
+                # the preview already marks truncation; generic shortening adds a non-JSON prefix
+                return preview
+        return self._limit_length(full)
 
 
 class ShellApi(FacadeApi):
