@@ -20,6 +20,7 @@ from serena.agent import SerenaAgent, Tool
 from serena.config.context_mode import SerenaAgentContext
 from serena.constants import REPO_ROOT
 from serena.util.exception import show_fatal_exception_safe
+from serena.util.tool_result import ToolResult
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class SerenaAgnoToolkit(Toolkit):
 
     @staticmethod
     def _create_agno_function(tool: Tool) -> Function:
-        def entrypoint(**kwargs: Any) -> str:
+        def entrypoint(**kwargs: Any) -> ToolResult:
             if "kwargs" in kwargs:
                 # Agno sometimes passes a kwargs argument explicitly, so we merge it
                 kwargs.update(kwargs["kwargs"])

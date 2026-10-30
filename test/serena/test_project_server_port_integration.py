@@ -16,7 +16,7 @@ from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION
 @pytest.fixture
 def endpoint_server(monkeypatch):
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *_args):
+        def log_message(self, format: str, *args) -> None:
             pass
 
         def do_GET(self):

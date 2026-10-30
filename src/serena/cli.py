@@ -390,8 +390,6 @@ class TopLevelCommands(AutoRegisteringGroup):
 
         factory = SerenaMCPFactory(transport=transport, context=context, project=project_file, memory_log_handler=memory_log_handler)
         server = factory.create_mcp_server(
-            host=host,
-            port=port,
             mode_selection_def=mode_selection_def,
             language_backend=LanguageBackend.from_str(language_backend) if language_backend else None,
             agent_interface=AgentInterface.from_str(agent_interface) if agent_interface else None,
@@ -409,7 +407,15 @@ class TopLevelCommands(AutoRegisteringGroup):
                 project_file,
             )
         log.info("Starting MCP server …")
-        server.run(transport=transport)
+        try:
+            if transport == "stdio":
+                server.run(transport="stdio")
+            else:
+                server.run(transport=transport, host=host, port=port)
+        finally:
+            # the SDK enters legacy SSE lifespans per connection, so the process owner cleans up
+            if transport == "sse" and factory.agent is not None:
+                factory.agent.on_shutdown()
 
     @staticmethod
     @click.command(
@@ -439,9 +445,7 @@ class TopLevelCommands(AutoRegisteringGroup):
                 raise click.UsageError("--project-from-cwd cannot be used together with --project")
             project = find_project_root()
             if project is None:
-                raise click.ClickException(
-                    f"No project root found from cwd={os.getcwd()} (no .serena/project.yml or .git found)."
-                )
+                raise click.ClickException(f"No project root found from cwd={os.getcwd()} (no .serena/project.yml or .git found).")
 
         if project is None:
             raise click.UsageError("Pass --project or --project-from-cwd")

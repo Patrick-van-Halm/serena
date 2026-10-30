@@ -1,0 +1,50 @@
+name: MCP SDK validation
+
+on:
+  push:
+    branches: [optimizations, upgrade/mcp-sdk-2.3.0]
+  pull_request:
+    branches: [optimizations]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: MCP SDK / Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install locked application and test dependencies
+        run: uv sync --locked --extra dev
+      - name: Check migration formatting and lint
+        run: |
+          uv run ruff check src/serena/mcp.py src/serena/mcp_bridge.py src/serena/util/mcp_context.py test/serena/test_mcp_sdk_v2.py
+          uv run ruff format --check src/serena/mcp.py src/serena/mcp_bridge.py src/serena/util/mcp_context.py test/serena/test_mcp_sdk_v2.py
+          git diff --check
+      - name: Type check application and tests
+        run: uv run poe type-check
+      - name: Run installed-stack MCP regressions
+        if: always()
+        run: |
+          uv run pytest -q test/serena/test_mcp.py test/serena/test_mcp_bridge.py test/serena/test_bridge_recovery.py test/serena/test_raw_file_transport.py test/serena/test_read_file_raw.py test/serena/test_shared_daemon_startup.py test/serena/test_shared_daemon_wsl.py test/serena/test_project_server_port_integration.py test/serena/test_project_server_endpoint.py test/serena/test_daemon_recovery.py test/serena/test_project_server_recovery.py test/serena/test_restart_cli.py test/serena/test_mcp_sdk_v2.py --timeout=90 --tb=short --show-capture=no --junitxml=mcp-sdk-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mcp-sdk-results-python-${{ matrix.python }}
+          path: mcp-sdk-results.xml

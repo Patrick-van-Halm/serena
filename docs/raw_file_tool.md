@@ -25,8 +25,9 @@ Rendering and model ingestion depend on the client and model's supported formats
 Both `start-mcp-server` and `start-mcp-bridge` preserve these native content blocks.
 The shared daemon and both HTTP clients use a dedicated response media type to
 keep ordinary text (including JSON-looking file text) distinct from MCP results.
-The shared protocol is version **6**. Update and restart all bridges and the daemon
-together while idle; a running older bridge cannot gain the new tool automatically.
+The shared protocol is version **7** following the MCP SDK 2.3.0 migration.
+Update and restart all bridges and the daemon together while idle; a running
+older bridge cannot gain the new tool automatically.
 
 The tool is read-only, requires an active project, and does not start a language
 server. Global/project tool exclusions and fixed tool sets still apply. Reads

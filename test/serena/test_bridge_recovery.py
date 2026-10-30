@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import anyio
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from serena.mcp_bridge import SerenaMCPBridge
 from serena.shared_mcp_recovery import DaemonRecoveryRefusedError, RecoveryScope

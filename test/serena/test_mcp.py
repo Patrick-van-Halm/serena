@@ -1,8 +1,9 @@
 """Tests for the mcp.py module in serena."""
 
+import anyio
 import pytest
-from mcp.server.fastmcp import Context
-from mcp.server.fastmcp.tools.base import Tool as MCPTool
+from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.tools.base import Tool as MCPTool
 
 from serena import __version__
 from serena.agent import Tool, ToolRegistry
@@ -19,7 +20,7 @@ make_tool = SerenaMCPFactory.make_mcp_tool
 class MockAgent:
     def __init__(self):
         self.project_config = None
-        self.serena_config = None
+        self.serena_config = SerenaConfig()
 
     @staticmethod
     def get_context() -> SerenaAgentContext:
@@ -58,6 +59,7 @@ class BasicTool(BaseMockTool):
         log_call: bool = True,
         catch_exceptions: bool = True,
         mcp_ctx: Context | None = None,
+        session_id_override: str | None = None,
         **kwargs,
     ) -> str:
         """Mock implementation of apply_ex."""
@@ -76,10 +78,8 @@ def test_create_mcp_server_reports_serena_version(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(factory, "_create_serena_agent", lambda *args, **kwargs: MinimalAgent())
 
     mcp_server = factory.create_mcp_server()
-    initialization_options = mcp_server._mcp_server.create_initialization_options()
-
-    assert initialization_options.server_name == "Serena"
-    assert initialization_options.server_version == __version__
+    assert mcp_server.name == "Serena"
+    assert mcp_server.version == __version__
 
 
 def test_make_tool_basic() -> None:
@@ -108,7 +108,10 @@ def test_make_tool_execution() -> None:
     mcp_tool = make_tool(mock_tool)
 
     # Execute the MCP tool function
-    result = mcp_tool.fn(name="Alice", age=30)
+    async def invoke() -> str:
+        return await mcp_tool.run({"name": "Alice", "age": 30}, Context())
+
+    result = anyio.run(invoke)
 
     assert result == "Hello Alice, you are 30 years old!"
 

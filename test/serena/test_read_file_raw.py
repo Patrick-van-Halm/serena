@@ -10,7 +10,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
-from mcp.types import BlobResourceContents, CallToolResult, EmbeddedResource, ImageContent, TextContent
+from mcp_types import BlobResourceContents, CallToolResult, EmbeddedResource, ImageContent, TextContent
 
 from serena.project import Project
 from serena.tools.raw_file_tools import ReadFileRawTool
@@ -36,10 +36,10 @@ def test_png_bytes_are_native_image_content(raw_project: Project) -> None:
     result = ReadFileRawTool(agent).apply("screenshot.bin")
 
     assert isinstance(result, CallToolResult)
-    assert not result.isError
+    assert not result.is_error
     image = result.content[1]
     assert isinstance(image, ImageContent)
-    assert image.mimeType == "image/png"
+    assert image.mime_type == "image/png"
     assert base64.b64decode(image.data, validate=True) == PNG
     assert isinstance(result.content[0], TextContent)
     metadata = json.loads(result.content[0].text)
@@ -62,7 +62,7 @@ def test_image_signature_selects_mime_without_reencoding(raw_project: Project, d
     path.write_bytes(data)
     image = RawFileContent.read(raw_project, path.name).to_mcp_result().content[1]
     assert isinstance(image, ImageContent)
-    assert image.mimeType == mime
+    assert image.mime_type == mime
     assert base64.b64decode(image.data) == data
 
 
@@ -74,7 +74,7 @@ def test_arbitrary_bytes_are_embedded_without_text_decoding(raw_project: Project
     resource = result.content[1]
     assert isinstance(resource, EmbeddedResource)
     assert isinstance(resource.resource, BlobResourceContents)
-    assert resource.resource.mimeType == "application/octet-stream"
+    assert resource.resource.mime_type == "application/octet-stream"
     assert str(resource.resource.uri) == path.as_uri()
     assert base64.b64decode(resource.resource.blob, validate=True) == data
 

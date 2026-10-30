@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from mcp.types import BlobResourceContents, CallToolResult, EmbeddedResource, ImageContent, TextContent
+from mcp_types import BlobResourceContents, CallToolResult, EmbeddedResource, ImageContent, TextContent
 
 from serena.util.file_proxy import FileProxy
 
@@ -104,6 +104,6 @@ class RawFileContent:
         )
         encoded = base64.b64encode(self.data).decode("ascii")
         if image_mime is not None:
-            return CallToolResult(content=[metadata, ImageContent(type="image", data=encoded, mimeType=image_mime)])
-        resource = BlobResourceContents(uri=self.path.as_uri(), mimeType=mime_type, blob=encoded)
+            return CallToolResult(content=[metadata, ImageContent(type="image", data=encoded, mime_type=image_mime)])
+        resource = BlobResourceContents(uri=self.path.as_uri(), mime_type=mime_type, blob=encoded)
         return CallToolResult(content=[metadata, EmbeddedResource(type="resource", resource=resource)])

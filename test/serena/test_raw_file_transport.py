@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import anyio
 import pytest
 from flask import Flask
-from mcp.types import CallToolResult, ImageContent
+from mcp_types import CallToolResult, ImageContent
 from werkzeug.serving import make_server
 
 from serena.config.serena_config import LanguageBackend, SerenaConfig
@@ -63,8 +63,8 @@ def test_mcp_wrappers_return_native_image_content(raw_agent: Any, wrapper: Any, 
     assert isinstance(result.content[1], ImageContent)
     assert base64.b64decode(result.content[1].data) == PNG
     assert wrapped.annotations is not None
-    assert wrapped.annotations.readOnlyHint is True
-    assert wrapped.annotations.destructiveHint is False
+    assert wrapped.annotations.read_only_hint is True
+    assert wrapped.annotations.destructive_hint is False
     summary = raw_agent.record_tool_usage.call_args.args[1]
     assert base64.b64encode(PNG).decode() not in summary
 
@@ -90,7 +90,7 @@ def test_bridge_proxy_retains_raw_tool_result_schema(raw_agent: Any) -> None:
 
 
 def test_missing_file_is_a_tool_error(raw_agent: Any) -> None:
-    from mcp.server.fastmcp.exceptions import ToolError
+    from mcp.server.mcpserver.exceptions import ToolError
 
     wrapped = SerenaFastMCPTool(ReadFileRawTool(raw_agent), openai_tool_compatible=True, structured_output=None)
 
@@ -156,7 +156,9 @@ def test_cross_project_forwarding_preserves_text_and_native_content(raw_agent: A
     wrapped = SerenaFastMCPTool(query, openai_tool_compatible=True, structured_output=structured)
 
     async def run() -> Any:
-        return await wrapped.run({"project_name": "other-project", "tool_name": "read_file_raw", "tool_params_json": "{}"}, convert_result=True)
+        return await wrapped.run(
+            {"project_name": "other-project", "tool_name": "read_file_raw", "tool_params_json": "{}"}, convert_result=True
+        )
 
     result = anyio.run(run)
     if raw:
@@ -164,7 +166,7 @@ def test_cross_project_forwarding_preserves_text_and_native_content(raw_agent: A
         assert isinstance(result.content[1], ImageContent)
         assert base64.b64decode(result.content[1].data) == PNG
     else:
-        assert result[0].text == original
+        assert result.content[0].text == original
 
 
 @pytest.mark.parametrize("blocked", ["inactive", "no-project"])

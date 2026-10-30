@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Lossless transport and payload-free diagnostics for text and multimodal tool results."""
 
-from mcp.types import CallToolResult, TextContent
+from mcp_types import CallToolResult, TextContent
 
 ToolResult = str | CallToolResult
 

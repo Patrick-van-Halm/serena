@@ -2,7 +2,7 @@
 
 import json
 
-from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
+from mcp.server.mcpserver.utilities.func_metadata import FuncMetadata
 
 from serena.config.serena_config import LanguageBackend
 from serena.jetbrains.jetbrains_plugin_client import JetBrainsPluginClientManager
