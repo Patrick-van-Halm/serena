@@ -13,3 +13,4 @@ from .query_project_tools import *
 from .repl_tools import *
 from .raw_file_tools import *
 from .batch_directory_tools import *
+from .batch_edit_tools import *

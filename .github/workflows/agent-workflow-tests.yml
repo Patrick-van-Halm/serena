@@ -27,8 +27,8 @@ jobs:
       - run: uv sync --locked --extra dev
       - name: Formatting and lint
         run: |
-          uv run ruff check src/serena/agent_workflow src/serena/tools/batch_directory_tools.py test/serena/test_agent_workflow*.py
-          uv run ruff format --diff src/serena/agent_workflow src/serena/tools/batch_directory_tools.py test/serena/test_agent_workflow*.py
+          uv run ruff check src/serena/agent_workflow src/serena/tools/batch_*_tools.py test/serena/test_agent_workflow*.py
+          uv run ruff format --diff src/serena/agent_workflow src/serena/tools/batch_*_tools.py test/serena/test_agent_workflow*.py
       - name: Type checking
         if: ${{ !cancelled() }}
         run: uv run poe type-check
