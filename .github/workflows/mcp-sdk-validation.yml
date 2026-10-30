@@ -3,26 +3,76 @@ name: MCP SDK validation
 on:
   push:
     branches: [upgrade/mcp-sdk-2.3.0]
-  pull_request:
-    branches: [optimizations]
 
 permissions:
   contents: read
 
 jobs:
-  sdk-audit:
+  migrate:
+    if: github.ref == 'refs/heads/upgrade/mcp-sdk-2.3.0'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: upgrade/mcp-sdk-2.3.0
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.13'
-      - name: Audit MCP integration points
+      - name: Apply reviewed migration
         run: |
-          git grep -n -E 'from mcp|import mcp|fastmcp|pydantic_settings|clientInfo|isError|mimeType|readOnlyHint|structuredContent' -- '*.py' || true
-      - name: Verify stable SDK installation
+          python scripts/migrate_mcp_sdk_v2.py
+          uv lock --upgrade-package mcp
+          uv sync --extra dev
+          git diff --name-only -z > /tmp/migrated-paths
+      - name: Format migration files
         run: |
-          uv venv /tmp/mcp-sdk-check
-          uv pip install --python /tmp/mcp-sdk-check/bin/python 'mcp==2.3.0' pytest
-          /tmp/mcp-sdk-check/bin/python -c 'from importlib.metadata import version; from mcp.server import MCPServer; print("Installed MCP", version("mcp")); print(MCPServer("Serena migration check"))'
+          uv run poe format > /tmp/mcp-format.log 2>&1 || cat /tmp/mcp-format.log
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          allowed = set(Path('/tmp/migrated-paths').read_bytes().split(b'\0')) | {b'src/serena/util/mcp_context.py'}
+          changed = subprocess.check_output(['git', 'diff', '--name-only', '-z']).split(b'\0')
+          unrelated = [p.decode() for p in changed if p and p not in allowed]
+          if unrelated:
+              subprocess.run(['git', 'restore', '--', *unrelated], check=True)
+          PY
+          git diff --check
+      - name: Commit generated source and lockfile to migration branch only
+        id: commit
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/serena test/serena pyproject.toml uv.lock
+          printf 'refactor: migrate Serena to MCP Python SDK 2.3.0\n\n- Port server construction, contexts, imports, and native content fields.\n- Preserve connection-scoped sessions and refresh the dependency lockfile.\n- Include SDK identity in shared-daemon compatibility checks.\n' > /tmp/mcp-commit-message
+          git commit -F /tmp/mcp-commit-message
+          git push origin HEAD:upgrade/mcp-sdk-2.3.0
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: migration-format
+          path: /tmp/mcp-format.log
+
+  validate:
+    needs: migrate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.migrate.outputs.commit }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+      - run: uv sync --locked --extra dev
+      - name: Type check
+        run: uv run poe type-check
+      - name: MCP regression tests
+        if: always()
+        run: |
+          uv run pytest -q test/serena/test_mcp.py test/serena/test_mcp_bridge.py test/serena/test_bridge_recovery.py test/serena/test_raw_file_transport.py test/serena/test_read_file_raw.py test/serena/test_shared_daemon_startup.py test/serena/test_shared_daemon_wsl.py test/serena/test_project_server_port_integration.py test/serena/test_project_server_endpoint.py test/serena/test_daemon_recovery.py test/serena/test_project_server_recovery.py test/serena/test_restart_cli.py
