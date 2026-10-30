@@ -71,7 +71,9 @@ def test_access_policy_and_symlinks(directory_project, tmp_path):
     except OSError:
         pytest.skip("symlinks are unavailable")
     reader = DirectoryBatchReader(directory_project)
-    rows = json.loads(reader.read([DirectoryRequest(relative_path="escape"), DirectoryRequest(relative_path=".", recursive=True)]))["results"]
+    rows = json.loads(reader.read([DirectoryRequest(relative_path="escape"), DirectoryRequest(relative_path=".", recursive=True)]))[
+        "results"
+    ]
     assert rows[0]["error"] is not None
     assert set(rows[1]["symlinks"]) == {"escape", "loop"}
     assert all("secret" not in path for path in rows[1]["files"])
@@ -101,8 +103,10 @@ def test_ignored_entries_are_also_bounded(directory_project):
 def test_serialized_output_bound(directory_project):
     root = Path(directory_project.project_root) / "one"
     for index in range(100):
-        (root / (str(index) + '\"' * 100)).touch()
-    text = DirectoryBatchReader(directory_project).read([DirectoryRequest(relative_path="one"), DirectoryRequest(relative_path="missing")], 200, 2048)
+        (root / (str(index) + '"' * 100)).touch()
+    text = DirectoryBatchReader(directory_project).read(
+        [DirectoryRequest(relative_path="one"), DirectoryRequest(relative_path="missing")], 200, 2048
+    )
     assert len(text) <= 2048
     rows = json.loads(text)["results"]
     assert "response_limit" in rows[0]["reasons"]
@@ -135,6 +139,25 @@ def test_cancellation_is_not_reported_as_a_path_error(directory_project):
 
 
 def test_non_directory_is_an_independent_error(directory_project):
-    rows = json.loads(DirectoryBatchReader(directory_project).read([DirectoryRequest(relative_path="one/a.txt"), DirectoryRequest(relative_path="two")]))["results"]
+    rows = json.loads(
+        DirectoryBatchReader(directory_project).read([DirectoryRequest(relative_path="one/a.txt"), DirectoryRequest(relative_path="two")])
+    )["results"]
     assert "NotADirectoryError" in rows[0]["error"]
     assert rows[1]["files"] == ["two/b.txt"]
+
+
+def test_escaped_errors_do_not_exceed_reserved_response_space(directory_project):
+    class EscapedErrorProject(DirectoryTestProject):
+        def validate_relative_path(self, relative_path: str, require_not_ignored: bool = False) -> None:
+            if relative_path == "denied":
+                raise PermissionError("\x01" * 200)
+            super().validate_relative_path(relative_path, require_not_ignored)
+
+    root = Path(directory_project.project_root)
+    for index in range(100):
+        (root / "one" / (str(index) + "x" * 80)).touch()
+    requests = [DirectoryRequest(relative_path="one"), DirectoryRequest(relative_path="denied")]
+    result = DirectoryBatchReader(EscapedErrorProject(root)).read(requests, max_total_chars=2048)
+    assert len(result) <= 2048
+    rows = json.loads(result)["results"]
+    assert rows[0]["files"] and rows[1]["error"].startswith("PermissionError")

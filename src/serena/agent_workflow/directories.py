@@ -97,9 +97,10 @@ class DirectoryBatchReader:
     def read(self, directories: list[DirectoryRequest], max_entries_per_dir: int = 200, max_total_chars: int = 20000) -> str:
         """List directories serially, retaining successful siblings when one path fails.
 
-        Symlinks are reported but never traversed. Entry limits count inspected entries,
-        including ignored entries, so ignored trees cannot cause unbounded scanning.
-        Reaching a limit is conservative: the uninspected remainder may be empty.
+        Discovered symlinks are reported but never traversed. Entry limits count
+        inspected entries, including ignored entries, so ignored trees cannot cause
+        unbounded scanning. Reaching a limit is conservative: the uninspected
+        remainder may be empty. Filesystem operations can still be slow or blocked.
 
         :param directories: at most eight independent directory requests
         :param max_entries_per_dir: maximum entries inspected per requested directory
@@ -130,8 +131,11 @@ class DirectoryBatchReader:
             except TimeoutError:
                 raise
             except (OSError, ValueError) as error:
-                # do not echo arbitrarily long system messages into a bounded response
-                result.error = f"{type(error).__name__}: {str(error)[:100]}"
+                # reserve by serialized length, including escaping in filesystem errors
+                message = f"{type(error).__name__}: {str(error)[:100]}"
+                while len(json.dumps(message, ensure_ascii=False)) > 128:
+                    message = message[:-1]
+                result.error = message
                 result.truncate("access_error")
             result.dirs.sort()
             result.files.sort()
