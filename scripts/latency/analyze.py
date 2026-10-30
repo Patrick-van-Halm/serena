@@ -56,9 +56,7 @@ class LatencyReport:
         # preserve untimed calls separately from measured executions
         durations = [call.duration_s for call in calls if call.duration_s is not None]
         intervals = [
-            (call.start_s, call.start_s + call.duration_s)
-            for call in calls
-            if call.start_s is not None and call.duration_s is not None
+            (call.start_s, call.start_s + call.duration_s) for call in calls if call.start_s is not None and call.duration_s is not None
         ]
         by_tool: dict[str, list[float]] = defaultdict(list)
         for call in calls:
@@ -86,13 +84,10 @@ class LatencyReport:
             "covered_execution_s": round(covered, 6) if covered is not None else None,
             "unattributed_window_s": round(uncovered, 6) if uncovered is not None else None,
             "by_tool": {
-                name: {"timed_calls": len(values), "duration_sum_s": round(sum(values), 6)}
-                for name, values in sorted(by_tool.items())
+                name: {"timed_calls": len(values), "duration_sum_s": round(sum(values), 6)} for name, values in sorted(by_tool.items())
             },
             "untimed_outcomes": [
-                {"tool": call.tool, "outcome": call.outcome}
-                for call in calls
-                if call.start_s is None or call.duration_s is None
+                {"tool": call.tool, "outcome": call.outcome} for call in calls if call.start_s is None or call.duration_s is None
             ],
         }
 

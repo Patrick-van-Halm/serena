@@ -27,10 +27,7 @@ class ShellCancellationProbe:
         with tempfile.TemporaryDirectory(prefix="serena-latency-") as directory:
             # bound both the child and the call independently of the cancellation being tested
             ready = Path(directory) / "ready"
-            script = (
-                "from pathlib import Path; import time; "
-                f"Path({str(ready)!r}).touch(); time.sleep(1.5); print('child-completed')"
-            )
+            script = f"from pathlib import Path; import time; Path({str(ready)!r}).touch(); time.sleep(1.5); print('child-completed')"
             argv = [sys.executable, "-c", script]
             command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
             executor = TaskExecutor("LatencyProbe")
