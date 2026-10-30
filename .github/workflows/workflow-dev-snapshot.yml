@@ -1,0 +1,21 @@
+name: Workflow development snapshot
+on:
+  push:
+    branches: [feat/agent-workflow-tools]
+    paths: [.github/workflows/workflow-dev-snapshot.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: git archive --format=tar.gz -o source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workflow-development-source
+          path: source.tar.gz
+          retention-days: 1
