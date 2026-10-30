@@ -25,10 +25,16 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked --extra dev
+      - name: Formatting and lint
+        run: |
+          uv run ruff check src/serena/agent_workflow src/serena/tools/batch_directory_tools.py test/serena/test_agent_workflow*.py
+          uv run ruff format --diff src/serena/agent_workflow src/serena/tools/batch_directory_tools.py test/serena/test_agent_workflow*.py
       - name: Type checking
+        if: ${{ !cancelled() }}
         run: uv run poe type-check
       - name: Existing MCP and latency regressions
+        if: ${{ !cancelled() }}
         run: uv run pytest -q test/serena/test_request_latency.py test/serena/test_mcp_sdk_v2.py --timeout=90
       - name: Agent workflow regressions
-        if: ${{ hashFiles('test/serena/test_agent_workflow.py') != '' }}
-        run: uv run pytest -q test/serena/test_agent_workflow.py --timeout=90
+        if: ${{ !cancelled() }}
+        run: uv run pytest -q test/serena/test_agent_workflow*.py --timeout=90

@@ -30,6 +30,8 @@ _RUNTIME_FILES = (
     "serena/ls_manager.py",
     "serena/tools/tools_base.py",
     "serena/tools/raw_file_tools.py",
+    "serena/tools/batch_directory_tools.py",
+    "serena/agent_workflow/directories.py",
     "serena/util/raw_file.py",
     "serena/util/tool_result.py",
     "serena/util/mcp_context.py",
