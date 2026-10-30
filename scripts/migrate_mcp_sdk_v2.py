@@ -26,8 +26,8 @@ edit('test/serena/test_mcp_sdk_v2.py', '    home.mkdir()\n',
      '    (home / "contexts").mkdir()\n'
      '    (home / "contexts" / "codex.yml").write_text(yaml.safe_dump(context), encoding="utf-8")\n')
 for indent in (20, 16):
-    edit('test/serena/test_mcp_sdk_v2.py', ' ' * indent + 'await client.session.send_ping()',
-         ' ' * indent + 'if mode == "legacy":\n' + ' ' * (indent + 4) + 'await client.session.send_ping()')
+    edit('test/serena/test_mcp_sdk_v2.py', '\n' + ' ' * indent + 'await client.session.send_ping()',
+         '\n' + ' ' * indent + 'if mode == "legacy":\n' + ' ' * (indent + 4) + 'await client.session.send_ping()')
 edit('src/serena/mcp.py',
      '            # Shut down the server if we are running in stdio mode.\n'
      '            # For other transports, we do nothing; the singleton agent instance remains active.\n'
