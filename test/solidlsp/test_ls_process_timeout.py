@@ -33,7 +33,4 @@ def test_timed_out_lsp_request_is_removed_and_cancelled() -> None:
         interface.send_request("textDocument/hover", {"x": 1})
 
     assert interface._pending_requests == {}
-    assert any(
-        payload.get("method") == "$/cancelRequest" and payload.get("params") == {"id": 1}
-        for payload in interface.sent
-    )
+    assert any(payload.get("method") == "$/cancelRequest" and payload.get("params") == {"id": 1} for payload in interface.sent)

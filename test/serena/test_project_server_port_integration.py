@@ -22,10 +22,16 @@ def endpoint_server(monkeypatch):
         def do_GET(self):
             self.send_response(200 if self.headers.get("Authorization") == "Bearer test-secret" else 401)
             self.end_headers()
-            self.wfile.write(json.dumps({
-                "status": "alive", "pid": 1234,
-                "shared_mcp_protocol_version": SHARED_MCP_PROTOCOL_VERSION, "shared_mcp_build_id": "test-build",
-            }).encode())
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "status": "alive",
+                        "pid": 1234,
+                        "shared_mcp_protocol_version": SHARED_MCP_PROTOCOL_VERSION,
+                        "shared_mcp_build_id": "test-build",
+                    }
+                ).encode()
+            )
 
         def do_POST(self):
             self.send_response(200 if self.headers.get("Authorization") == "Bearer test-secret" else 401)

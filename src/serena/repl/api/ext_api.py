@@ -49,9 +49,7 @@ class ExternalProjectContextManager:
         self._active_project_context.__enter__()
 
         # switch the facades to the external project
-        entrypoint.set_external_project_(
-            ExternalProjectExecution(str(registered_project.project_root), self._read_only, self._agent)
-        )
+        entrypoint.set_external_project_(ExternalProjectExecution(str(registered_project.project_root), self._read_only, self._agent))
 
     def __exit__(self, exc_type: type[BaseException] | None, exc_value: BaseException | None, traceback: TracebackType | None) -> None:
         self._agent.get_repl().entrypoint.set_external_project_(None)

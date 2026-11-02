@@ -266,7 +266,6 @@ def test_concurrent_queries_serialize_active_project_context(project_server: Pro
         assert second_future.result(timeout=1) == "second"
 
 
-
 def test_shared_mcp_runtime_info_reuses_project_agent(project_server: ProjectServer, monkeypatch: pytest.MonkeyPatch) -> None:
     server = cast(Any, project_server)
     server._mcp_runtimes = {}
@@ -330,7 +329,6 @@ def test_shared_mcp_tool_call_forwards_bridge_session_id(project_server: Project
     assert runtime.active_calls == 0
 
 
-
 def test_shared_mcp_open_bridge_blocks_idle_eviction(project_server: ProjectServer, monkeypatch: pytest.MonkeyPatch) -> None:
     server = cast(Any, project_server)
     agent = MagicMock()
@@ -376,7 +374,6 @@ def test_shared_mcp_background_task_blocks_eviction(project_server: ProjectServe
     agent.on_shutdown.assert_not_called()
 
 
-
 def test_shared_mcp_stale_bridge_lease_does_not_pin_runtime(project_server: ProjectServer) -> None:
     server = cast(Any, project_server)
     agent = MagicMock()
@@ -414,7 +411,6 @@ def test_shared_mcp_heartbeat_renews_bridge_lease(project_server: ProjectServer,
     assert runtime.bridge_sessions["chat-1"] > 0
 
 
-
 def test_project_server_heartbeat_exposes_shared_runtime_identity(project_server: ProjectServer) -> None:
     project_server._agent.serena_config.auth_secret = "heartbeat-secret"
     project_server._app = Flask(__name__)
@@ -431,7 +427,6 @@ def test_project_server_heartbeat_exposes_shared_runtime_identity(project_server
     assert payload["pid"] > 0
 
 
-
 def test_shared_mcp_runtime_root_rejects_wrong_worktree(tmp_path) -> None:
     requested = str((tmp_path / "worktree-a").resolve())
     active = str((tmp_path / "worktree-b").resolve())
@@ -446,7 +441,6 @@ def test_shared_mcp_runtime_root_accepts_exact_worktree(tmp_path) -> None:
     canonical = str(root.resolve())
 
     assert ProjectServer._assert_mcp_runtime_root(canonical, canonical) == canonical
-
 
 
 def test_shared_mcp_runtime_repairs_wrong_same_named_worktree(project_server: ProjectServer, monkeypatch) -> None:

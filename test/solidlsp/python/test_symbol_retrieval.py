@@ -15,8 +15,8 @@ from serena.symbol import LanguageServerSymbol
 from serena.util.text_utils import find_text_coordinates
 from solidlsp import SolidLanguageServer
 from solidlsp.ls import DocumentSymbols, SymbolBodyFactory
-from solidlsp.ls_utils import FileUtils
 from solidlsp.ls_types import SymbolKind
+from solidlsp.ls_utils import FileUtils
 from test.solidlsp.conftest import PYTHON_BACKEND_LANGUAGES
 
 pytestmark = pytest.mark.python

@@ -303,8 +303,12 @@ class LspReferenceCollectionRenderer(Renderer[LspReferenceCollection]):
         self._grouper = grouper
 
     @staticmethod
-    def _reference_summary(ref: ReferenceInLanguageServerSymbol) -> dict[str, Any]:
-        ref_dict = ref.symbol.to_dict(kind=True, relative_path=True, depth=0, body=False, body_location=True)
+    def _reference_metadata(ref: ReferenceInLanguageServerSymbol) -> LanguageServerSymbol.OutputDict:
+        return ref.symbol.to_dict(kind=True, relative_path=True, depth=0, body=False, body_location=True).copy()
+
+    @classmethod
+    def _reference_summary(cls, ref: ReferenceInLanguageServerSymbol) -> dict[str, Any]:
+        ref_dict = cls._reference_metadata(ref)
         return {
             "name_path": ref_dict.get("name_path"),
             "kind": ref_dict.get("kind"),
@@ -317,24 +321,25 @@ class LspReferenceCollectionRenderer(Renderer[LspReferenceCollection]):
         references: list[ReferenceInLanguageServerSymbol],
         content_loader: Callable[[ReferenceInLanguageServerSymbol], str],
     ) -> list[str | None]:
-        """Load surrounding source only while it can plausibly fit in the answer budget."""
-        summaries = [self._reference_summary(ref) for ref in references]
-        metadata_size = len(self._to_json(self._grouper.group([dict(summary) for summary in summaries], copy_input=False)))
+        """Load surrounding source while its serialized form fits alongside the reference metadata."""
+        reference_dicts = [self._reference_metadata(ref) for ref in references]
+        metadata_size = len(self._to_json(self._grouper.group(reference_dicts, copy_input=False)))
         remaining = self._get_max_answer_chars() - metadata_size
-        if remaining <= 0:
-            return [None] * len(references)
 
-        contents: list[str | None] = []
-        # JSON keys, quoting and grouping add overhead beyond the snippet itself. Reserve a
-        # small per-entry margin rather than reading source that will certainly be discarded.
-        per_entry_overhead = 96
+        contents: list[str | None] = [None] * len(references)
+        # account for the field's comma, key and quotes before loading more source
+        context_overhead = len(self._to_json({"content_around_reference": ""}))
         for index, ref in enumerate(references):
-            content = content_loader(ref)
-            cost = len(content) + per_entry_overhead
-            if cost > remaining:
-                contents.extend([None] * (len(references) - index))
+            if remaining < context_overhead:
                 break
-            contents.append(content)
+            content = content_loader(ref)
+            # reject oversized source before allocating its JSON-escaped representation
+            if len(content) + context_overhead > remaining:
+                break
+            cost = len(self._to_json({"content_around_reference": content}))
+            if cost > remaining:
+                break
+            contents[index] = content
             remaining -= cost
         return contents
 
@@ -342,7 +347,7 @@ class LspReferenceCollectionRenderer(Renderer[LspReferenceCollection]):
         reference_dicts = []
         ref_summaries = []
         for ref, content_around_ref in zip(obj.references, obj.contents_around_references_, strict=True):
-            ref_dict = dict(ref.symbol.to_dict(kind=True, relative_path=True, depth=0, body=False, body_location=True))
+            ref_dict = self._reference_metadata(ref)
             if content_around_ref is not None:
                 ref_dict["content_around_reference"] = content_around_ref
             reference_dicts.append(ref_dict)

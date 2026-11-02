@@ -10,6 +10,7 @@ import os
 import pathlib
 import shutil
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -174,10 +175,10 @@ class TestCppDocumentSymbolCache:
     def _copy_cpp_fixture(self, tmp_path: Path) -> Path:
         fixture_path = get_repo_path(LanguageServerId.CPP)
         target_path = tmp_path / "test_repo"
-        shutil.copytree(fixture_path, target_path)
+        shutil.copytree(fixture_path, target_path, ignore=shutil.ignore_patterns(".serena"))
         return target_path
 
-    def test_cache_invalidates_when_clangd_context_changes(self, tmp_path: Path) -> None:
+    def test_cache_invalidates_when_clangd_context_changes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo_path = self._copy_cpp_fixture(tmp_path)
         ls_settings_alt = {
             LanguageServerId.CPP: {
@@ -187,52 +188,30 @@ class TestCppDocumentSymbolCache:
 
         main_cpp = os.path.join("a.cpp")
 
-        def _assert_caches_loaded_and_clean(ls: SolidLanguageServer) -> None:
-            assert ls._raw_document_symbols_cache, "Expected raw document-symbol cache to load from disk"
-            assert ls._document_symbols_cache, "Expected document-symbol cache to load from disk"
-            assert not ls._raw_document_symbols_cache_is_modified
-            assert not ls._document_symbols_cache_is_modified
-
-        def _assert_caches_empty(ls: SolidLanguageServer) -> None:
-            assert ls._raw_document_symbols_cache == {}
-            assert ls._document_symbols_cache == {}
-
-        def _assert_caches_modified(ls: SolidLanguageServer) -> None:
-            assert ls._raw_document_symbols_cache_is_modified
-            assert ls._document_symbols_cache_is_modified
-
         with start_ls_context(LanguageServerId.CPP, repo_path=str(repo_path), solidlsp_dir=tmp_path) as ls_default:
-            _ = ls_default.request_document_symbols(main_cpp)
-
-            default_raw_cache_version = ls_default._raw_document_symbols_cache_version()
-            default_doc_cache_version = ls_default._document_symbols_cache_version()
+            symbols = ls_default.request_document_symbols(main_cpp)
+            assert "main" in {symbol["name"] for symbol in symbols.iter_symbols()}
 
             ls_default.save_cache()
-            cache_dir = ls_default.cache_dir
-            cache_files = [p for p in cache_dir.rglob("*") if p.is_file()]
-            assert cache_files, f"Expected SolidLSP to create cache artifacts under {cache_dir}"
+            assert any(path.is_file() for path in ls_default.cache_dir.rglob("*")), "Expected persisted symbol cache artifacts"
 
+        # reuse persisted symbols without asking clangd to parse the unchanged file again
         with start_ls_context(LanguageServerId.CPP, repo_path=str(repo_path), solidlsp_dir=tmp_path) as ls_default_again:
-            assert ls_default_again.cache_dir == cache_dir
-            _assert_caches_loaded_and_clean(ls_default_again)
-            _ = ls_default_again.request_document_symbols(main_cpp)
-            assert not ls_default_again._raw_document_symbols_cache_is_modified
-            assert not ls_default_again._document_symbols_cache_is_modified
+            document_symbol = Mock(wraps=ls_default_again.server.send.document_symbol)
+            monkeypatch.setattr(ls_default_again.server.send, "document_symbol", document_symbol)
+            symbols = ls_default_again.request_document_symbols(main_cpp)
+            assert "main" in {symbol["name"] for symbol in symbols.iter_symbols()}
+            document_symbol.assert_not_called()
 
+        # changed clangd settings must obtain fresh symbols despite unchanged source contents
         with start_ls_context(
             LanguageServerId.CPP,
             repo_path=str(repo_path),
             ls_specific_settings=ls_settings_alt,
             solidlsp_dir=tmp_path,
         ) as ls_alt:
-            assert ls_alt.cache_dir == cache_dir
-            alt_raw_cache_version = ls_alt._raw_document_symbols_cache_version()
-            alt_doc_cache_version = ls_alt._document_symbols_cache_version()
-
-            assert alt_raw_cache_version != default_raw_cache_version
-            assert alt_doc_cache_version != default_doc_cache_version
-
-            _assert_caches_empty(ls_alt)
-
-            _ = ls_alt.request_document_symbols(main_cpp)
-            _assert_caches_modified(ls_alt)
+            document_symbol = Mock(wraps=ls_alt.server.send.document_symbol)
+            monkeypatch.setattr(ls_alt.server.send, "document_symbol", document_symbol)
+            symbols = ls_alt.request_document_symbols(main_cpp)
+            assert "main" in {symbol["name"] for symbol in symbols.iter_symbols()}
+            assert document_symbol.called, "Changed clangd context must refresh persisted symbols from the language server"

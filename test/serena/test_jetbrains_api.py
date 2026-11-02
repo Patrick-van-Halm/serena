@@ -74,6 +74,6 @@ def test_find_symbol_rejects_too_many_matches_with_identifiers(agent: MagicMock,
 
 
 def test_find_symbol_rejects_wildcard_only_pattern(agent: MagicMock, client: MagicMock) -> None:
-    with pytest.raises(ValueError, match="get_symbols_overview"):
+    with pytest.raises(ValueError, match="name_path_pattern.*wildcards"):
         JetBrainsApi(agent).find_symbol("*")
     client.find_symbol.assert_not_called()

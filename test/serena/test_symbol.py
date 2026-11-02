@@ -260,9 +260,7 @@ def test_find_name_paths_reset_below_file_symbol() -> None:
 @pytest.mark.python
 class TestLanguageServerSymbolRetriever:
     @pytest.mark.parametrize("project_with_ls", PYTHON_BACKEND_LANGUAGES, indirect=True)
-    def test_find_uses_document_symbols_without_full_project_tree(
-        self, project_with_ls: Project, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_find_uses_document_symbols_without_full_project_tree(self, project_with_ls: Project, monkeypatch: pytest.MonkeyPatch):
         symbol_retriever = LanguageServerSymbolRetriever(project_with_ls)
         for language_server in project_with_ls.get_language_server_manager_or_raise().iter_language_servers():
             monkeypatch.setattr(

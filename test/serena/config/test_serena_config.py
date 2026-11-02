@@ -944,7 +944,6 @@ class TestTrustedProjectPathPatterns:
         assert not self._config("/opt/dev/projects/my_trusted_project", "/home/user/projects/**").is_trusted_project_path("/somewhere/else")
 
 
-
 def test_duplicate_project_names_use_root_selectors(tmp_path) -> None:
     first_root = tmp_path / "main"
     second_root = tmp_path / "worktree"
@@ -985,10 +984,7 @@ def test_existing_relative_path_wins_over_ambiguous_project_name(tmp_path, monke
     assert resolved.project_root == worktree.resolve()
 
 
-
-def test_refresh_registered_projects_discovers_same_named_worktree_and_preserves_loaded_instance(
-    tmp_path, monkeypatch
-) -> None:
+def test_refresh_registered_projects_discovers_same_named_worktree_and_preserves_loaded_instance(tmp_path, monkeypatch) -> None:
     main_root = tmp_path / "main"
     worktree_root = tmp_path / "worktree"
     main_root.mkdir()

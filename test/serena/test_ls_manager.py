@@ -105,7 +105,6 @@ def test_from_languages_stops_process_of_server_that_raises_after_spawning(_clea
     assert not _pid_alive(pids[failing_id]), "the process spawned by the server that raised post-spawn must not leak"
 
 
-
 def test_nonforced_cache_saves_are_coalesced() -> None:
     manager = LanguageServerManager.__new__(LanguageServerManager)
     fake_ls = MagicMock()

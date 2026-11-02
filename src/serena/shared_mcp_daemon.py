@@ -172,9 +172,7 @@ class SharedMCPDaemon:
     def _startup_lock(self, deadline: float) -> Iterator[None]:
         # use the same endpoint lock for startup and explicit restart
         if not self._endpoint.is_loopback:
-            raise ProjectServerEndpointError(
-                f"Daemon startup/restart requires a loopback endpoint: {self._endpoint.base_url}"
-            )
+            raise ProjectServerEndpointError(f"Daemon startup/restart requires a loopback endpoint: {self._endpoint.base_url}")
         self._home.mkdir(parents=True, exist_ok=True)
         lock = FileLock(str(self._endpoint.startup_lock_path(self._home)), timeout=self._remaining(deadline))
         try:

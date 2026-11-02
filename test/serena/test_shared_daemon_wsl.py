@@ -18,9 +18,10 @@ from serena.project_server_endpoint import (
 )
 from serena.shared_mcp_daemon import ProjectServerStartupError, SharedMCPDaemon
 from serena.shared_mcp_recovery import RecoveryScope
-from test.serena.test_shared_daemon_startup import DaemonEnvironment
-from test.serena.test_shared_daemon_startup import daemon_environment as daemon_environment
-from test.serena.test_shared_daemon_startup import unused_port
+from test.serena import test_shared_daemon_startup
+from test.serena.test_shared_daemon_startup import DaemonEnvironment, unused_port
+
+daemon_environment = test_shared_daemon_startup.daemon_environment
 
 
 @pytest.fixture
@@ -57,9 +58,7 @@ def test_wsl_timeout_starts_absent_daemon(daemon_environment: DaemonEnvironment,
     config = daemon_environment.config(unused_port())
     client = getattr(SharedMCPDaemon(config), operation)(5)
     assert client.pid is not None
-    assert daemon_environment.records() == [
-        {"pid": client.pid, "port": config.project_server_port, "home": str(daemon_environment.home)}
-    ]
+    assert daemon_environment.records() == [{"pid": client.pid, "port": config.project_server_port, "home": str(daemon_environment.home)}]
     assert SharedMCPDaemon(config).ensure_running(5).pid == client.pid
 
 

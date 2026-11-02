@@ -29,7 +29,6 @@ def test_anthropic_token_count_sends_a_plain_user_message() -> None:
     )
 
 
-
 def test_headless_agent_module_does_not_eagerly_import_dashboard_stack(monkeypatch) -> None:
     import subprocess
     import sys
@@ -42,7 +41,6 @@ def test_headless_agent_module_does_not_eagerly_import_dashboard_stack(monkeypat
         "assert 'PIL' not in sys.modules"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
-
 
 
 def test_importing_shared_mcp_bridge_does_not_load_flask_or_dashboard() -> None:

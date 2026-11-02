@@ -1369,14 +1369,9 @@ class TestSerenaAgent:
 
 
 class TestPromptProvision:
-    class MockContext:
-        def __init__(self, session_id: str):
-            self.session = session_id
-
-    @classmethod
-    def _call_tool(cls, agent: SerenaAgent, tool_class: type[Tool], session_id: str = "global", **kwargs) -> str:
-        result = agent.get_tool(tool_class).apply_ex(mcp_ctx=cls.MockContext(session_id), catch_exceptions=False, **kwargs)
-        return result
+    @staticmethod
+    def _call_tool(agent: SerenaAgent, tool_class: type[Tool], session_id: str = "global", **kwargs) -> str:
+        return agent.get_tool(tool_class).apply_ex(session_id_override=session_id, catch_exceptions=False, **kwargs)
 
     @staticmethod
     def _assert_activation_message(result: str, project_name: str, present: bool) -> None:

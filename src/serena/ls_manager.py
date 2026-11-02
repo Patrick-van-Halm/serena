@@ -3,9 +3,9 @@
 import logging
 import os.path
 import threading
-from time import monotonic
 from collections.abc import Iterator
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING
 
 from sensai.util.logging import LogTime

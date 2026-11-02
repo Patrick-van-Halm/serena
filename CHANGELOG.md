@@ -45,6 +45,9 @@ Status of the `main` branch. Changes prior to the next official version change w
     including its project configuration, are left untouched (#2029)
 
 * Tools:
+  - Fix: reference context budgets now include complete symbol metadata and JSON escaping, avoiding
+    unnecessary source reads and keeping retained snippets within the response limit.
+  - Fix: pattern matches starting inside a CRLF newline now identify the line that newline terminates.
   - **Breaking**: Complete bulk MCP interfaces for filesystem operations, raw reads, symbols, memory
     files, and JetBrains operations. Calls accept request arrays even for one target, with ordered
     per-item outcomes and bounded output. Legacy configuration names continue to resolve to the new

@@ -1,4 +1,6 @@
+import threading
 import time
+from concurrent.futures import CancelledError
 
 import pytest
 
@@ -118,23 +120,31 @@ def test_task_executor_cancellation_via_task_info(executor):
     assert second.did_run
 
 
-
 def test_timed_out_task_does_not_overlap_following_task() -> None:
     executor = TaskExecutor("TimeoutSerialExecutor")
-    state = {"first_started": False, "first_finished": False, "overlap": False}
+    first_started = threading.Event()
+    first_finished = threading.Event()
+    release = threading.Event()
+    second_started = threading.Event()
 
     def first() -> None:
-        state["first_started"] = True
-        time.sleep(0.15)
-        state["first_finished"] = True
+        first_started.set()
+        assert release.wait(2)
+        first_finished.set()
 
     def second() -> None:
-        state["overlap"] = state["first_started"] and not state["first_finished"]
+        second_started.set()
+        assert first_finished.is_set()
 
     first_task = executor.issue_task(first, timeout=0.03)
     second_task = executor.issue_task(second, timeout=1)
 
-    with pytest.raises(Exception):
-        first_task.result(timeout=0.05)
+    try:
+        assert first_started.wait(1)
+        with pytest.raises(CancelledError):
+            first_task.result(timeout=1)
+        assert not second_started.is_set()
+    finally:
+        release.set()
     assert second_task.result(timeout=1) is None
-    assert state["overlap"] is False
+    assert second_started.is_set()

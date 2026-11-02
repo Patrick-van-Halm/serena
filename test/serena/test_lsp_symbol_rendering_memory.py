@@ -29,7 +29,6 @@ def test_symbol_renderer_skips_full_dict_tree_when_mandatory_values_exceed_budge
         symbol.to_dict.assert_not_called()
 
 
-
 def test_symbol_renderer_preflights_bodies_before_materialising_dict_collection() -> None:
     agent = MagicMock()
     agent.serena_config.default_max_tool_answer_chars = 200

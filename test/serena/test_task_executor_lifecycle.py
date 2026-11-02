@@ -48,10 +48,7 @@ def test_executor_preserves_fifo_across_idle_periods() -> None:
 
     # alternate queued bursts with idle periods to exercise dispatcher retirement and reuse
     for burst in range(10):
-        tasks = [
-            executor.issue_task(lambda value=value: observed.append(value), logged=False)
-            for value in range(burst * 5, burst * 5 + 5)
-        ]
+        tasks = [executor.issue_task(lambda value=value: observed.append(value), logged=False) for value in range(burst * 5, burst * 5 + 5)]
         for task in tasks:
             task.result(timeout=2)
         time.sleep(0.005)

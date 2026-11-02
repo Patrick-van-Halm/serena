@@ -26,8 +26,9 @@ from serena.config.context_mode import SerenaAgentContext
 from serena.config.serena_config import SerenaConfig
 from serena.constants import SERENA_CONFIG_TEMPLATE_FILE, SERENAS_OWN_CONTEXT_YAMLS_DIR
 from serena.mcp import SerenaFastMCPTool
+from serena.task_executor import TaskExecutor
 from serena.tools import Tool, ToolCallError
-from serena.util.mcp_context import MCPConnectionIdentity
+from serena.tools.tools_base import ToolMarkerDoesNotRequireActiveProject
 from serena.util.tool_call import ToolCallContext, ToolCallInterrupted
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=")
@@ -168,18 +169,32 @@ def test_stdio_survives_errors_parallel_calls_and_native_images(isolated_project
 
 
 def test_connection_identity_is_stable_and_isolated() -> None:
-    """The SDK creates request-scoped proxies; legacy conversations remain connection-scoped."""
-    server = MCPServer("identity-test")
+    """Serena's tool dispatch preserves one session per legacy SDK connection."""
+    executor = TaskExecutor("MCPIdentityTest")
+    agent = SimpleNamespace(
+        serena_config=SerenaConfig(tool_timeout=5),
+        get_context=lambda: SerenaAgentContext.from_name("codex"),
+        get_active_tools=lambda: SimpleNamespace(contains_tool_name=lambda name: name == "identity"),
+        get_language_server_manager=lambda: None,
+        issue_task=executor.issue_task,
+        record_tool_usage=lambda *_: None,
+    )
 
-    @server.tool()
-    def identity(ctx: Context) -> str:
-        return MCPConnectionIdentity.session_id(ctx)
+    class IdentityTool(Tool, ToolMarkerDoesNotRequireActiveProject):
+        def apply(self, session_id: str) -> str:
+            """Return the session identity selected by Serena for this connection."""
+            return session_id
+
+    server = MCPServer("identity-test", tools=[SerenaFastMCPTool(IdentityTool(agent), False, False)])
 
     async def exercise() -> None:
         async with Client(server, mode="legacy") as first, Client(server, mode="legacy") as second:
-            first_id = text_of(await first.call_tool("identity"))
-            assert first_id == text_of(await first.call_tool("identity"))
-            assert first_id != text_of(await second.call_tool("identity"))
+            first_result = await first.call_tool("identity")
+            repeated_result = await first.call_tool("identity")
+            second_result = await second.call_tool("identity")
+            assert all(not result.is_error for result in (first_result, repeated_result, second_result))
+            assert text_of(first_result) == text_of(repeated_result)
+            assert text_of(first_result) != text_of(second_result)
 
     anyio.run(exercise)
 

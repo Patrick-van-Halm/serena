@@ -74,7 +74,9 @@ class DaemonEnvironment:
             code = "from serena.cli import top_level as serve; serve()"
         process = subprocess.Popen(
             [sys.executable, "-c", code, "start-project-server", "--host", "127.0.0.1", "--port", str(port), "--log-level", "WARNING"],
-            env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -266,6 +268,7 @@ def test_indeterminate_health_failure_is_not_treated_as_absence(daemon_environme
 
     def fail(*args, **kwargs):
         raise error
+
     monkeypatch.setattr(requests, "get", fail)
     with pytest.raises(ProjectServerEndpointError):
         SharedMCPDaemon(daemon_environment.config(unused_port())).ensure_running(1)
@@ -317,8 +320,18 @@ def test_proxy_refusal_is_not_endpoint_refusal(daemon_environment, monkeypatch) 
 def test_stale_child_of_another_parent_can_be_replaced_without_killing_parent(daemon_environment) -> None:
     # keep a separate parent alive after its child exits, as detached bridge launches can do
     port = unused_port()
-    child_command = [sys.executable, "-c", "from serena.cli import top_level; top_level()", "start-project-server",
-                     "--host", "127.0.0.1", "--port", str(port), "--log-level", "WARNING"]
+    child_command = [
+        sys.executable,
+        "-c",
+        "from serena.cli import top_level; top_level()",
+        "start-project-server",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--log-level",
+        "WARNING",
+    ]
     holder_code = (
         "import subprocess,signal,time,sys; "
         f"child=subprocess.Popen({child_command!r}); "
@@ -326,8 +339,7 @@ def test_stale_child_of_another_parent_can_be_replaced_without_killing_parent(da
     )
     environment = os.environ.copy()
     environment["DAEMON_TEST_BUILD"] = "old-build"
-    holder = subprocess.Popen([sys.executable, "-c", holder_code], env=environment,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    holder = subprocess.Popen([sys.executable, "-c", holder_code], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     old_pid = None
     try:
         deadline = time.monotonic() + 5

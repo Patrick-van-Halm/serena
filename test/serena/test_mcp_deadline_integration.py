@@ -84,10 +84,9 @@ def anyio_backend():
 
 @pytest.fixture
 def http_runtime(tmp_path, monkeypatch):
-    config = SimpleNamespace(tool_timeout=2, auth_secret="test-secret")
-    config.with_headless_mode_overrides = lambda: config
+    config = SerenaConfig(tool_timeout=2, auth_secret="test-secret")
     monkeypatch.setattr(SerenaConfig, "from_config_file", lambda: config)
-    app = ProjectServer(port=0)
+    app = ProjectServer()
     agent = ControlledAgent(tmp_path, config)
     runtime = MCPProjectRuntime(agent=agent, project_root=str(tmp_path), context="codex", last_access=time.monotonic())
     monkeypatch.setattr(app, "_get_mcp_runtime", lambda root, context: runtime)
@@ -99,8 +98,13 @@ def http_runtime(tmp_path, monkeypatch):
 
     def call(value, request_id, **extra):
         payload = dict(
-            project_root=str(tmp_path), context="codex", session_id="chat", tool_name=agent.tool.get_name(),
-            arguments={"value": value}, request_id=request_id, deadline=time.time() + 2,
+            project_root=str(tmp_path),
+            context="codex",
+            session_id="chat",
+            tool_name=agent.tool.get_name(),
+            arguments={"value": value},
+            request_id=request_id,
+            deadline=time.time() + 2,
         )
         payload.update(extra)
         return requests.post(url + "/mcp/tool-call", headers=headers, json=payload, timeout=4)
@@ -120,7 +124,10 @@ def test_http_timeout_encloses_server_execution_allowance(http_runtime) -> None:
     fixture = http_runtime
     client = SharedMCPDaemonClient(fixture.config, port=fixture.server.server_port)
     # the old two-second configuration used a one-second HTTP timeout
-    assert client.call_tool(fixture.runtime.project_root, "codex", "chat", fixture.agent.tool.get_name(), {"value": "ok", "delay": 1.2}) == "ok"
+    assert (
+        client.call_tool(fixture.runtime.project_root, "codex", "chat", fixture.agent.tool.get_name(), {"value": "ok", "delay": 1.2})
+        == "ok"
+    )
     assert fixture.agent.effects == ["ok"]
 
 
@@ -147,8 +154,10 @@ def test_running_cancellation_does_not_allow_a_second_edit_to_overlap(http_runti
         try:
             assert fixture.agent.entered.wait(1)
             cancelled = requests.post(
-                fixture.url + "/mcp/cancel-tool-call", headers=fixture.headers,
-                json={"session_id": "chat", "request_id": "running"}, timeout=1,
+                fixture.url + "/mcp/cancel-tool-call",
+                headers=fixture.headers,
+                json={"session_id": "chat", "request_id": "running"},
+                timeout=1,
             )
             assert cancelled.json()["outcome"] == "unknown"
             assert "outcome=unknown" in first.result(timeout=1).text
@@ -198,9 +207,7 @@ async def test_mcp_wrappers_allow_progress_while_a_tool_is_blocked(wrapper, tmp_
     async with anyio.create_task_group() as group:
         group.start_soon(invoke)
         try:
-            with anyio.fail_after(1):
-                while not agent.entered.is_set():
-                    await anyio.sleep(0.001)
+            assert await anyio.to_thread.run_sync(agent.entered.wait, 1)
             assert results == []
         finally:
             agent.release.set()
@@ -262,9 +269,7 @@ async def test_bridge_host_cancellation_prevents_a_queued_edit(http_runtime, mon
             assert fixture.agent.entered.wait(1)
             async with anyio.create_task_group() as group:
                 group.start_soon(invoke)
-                with anyio.fail_after(1):
-                    while not received.is_set():
-                        await anyio.sleep(0.001)
+                assert await anyio.to_thread.run_sync(received.wait, 1)
                 group.cancel_scope.cancel()
         finally:
             fixture.agent.release.set()
