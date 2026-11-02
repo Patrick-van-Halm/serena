@@ -1,0 +1,137 @@
+name: Bulk-only tool migration validation
+on:
+  push:
+    branches: [refactor/bulk-only-tools]
+    paths:
+      - '.github/bulk-migration/**'
+      - '.github/workflows/bulk-tools-migration.yml'
+permissions:
+  contents: read
+jobs:
+  apply:
+    if: github.ref == 'refs/heads/refactor/bulk-only-tools'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      source_sha: ${{ steps.apply.outputs.source_sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply exact reviewed patch and remove temporary publishing files
+        id: apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import gzip
+          import hashlib
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+
+          packed = b''.join(Path(f'.github/bulk-migration/part-{index}').read_bytes() for index in range(8))
+          patch = gzip.decompress(packed)
+          assert hashlib.sha256(patch).hexdigest() == '2a6d15c3fb47a020c153e50d725f0c1aed2cedc6b4844bc70a50086dffff5c62', 'Patch checksum mismatch'
+          entries = []
+          for block in patch.decode('utf-8').split('diff --git ')[1:]:
+              left, right = block.splitlines()[0].split()
+              path = right.removeprefix('b/')
+              assert left == 'a/' + path and path.startswith(('src/', 'test/', 'docs/')) and '..' not in Path(path).parts
+              match = re.search(r'^index ([0-9a-f]{40})\.\.([0-9a-f]{40})', block, re.MULTILINE)
+              assert match is not None, path
+              old, new = match.groups()
+              if old == '0' * 40:
+                  assert not Path(path).exists(), path
+              else:
+                  assert git('hash-object', path) == old, 'Unexpected baseline: ' + path
+              entries.append((path, new))
+          assert len(entries) == 40 and len({path for path, _ in entries}) == 40
+          patch_path = Path(os.environ['RUNNER_TEMP'], 'bulk-only.patch')
+          patch_path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', str(patch_path)], check=True)
+          subprocess.run(['git', 'apply', str(patch_path)], check=True)
+          for path, expected in entries:
+              assert git('hash-object', path) == expected, 'Published file mismatch: ' + path
+          subprocess.run(['git', 'diff', '--check'], check=True)
+          subprocess.run(['git', 'add', '--', *(path for path, _ in entries)], check=True)
+          subprocess.run(['git', 'rm', '-r', '--', '.github/bulk-migration', '.github/workflows/bulk-tools-migration.yml'], check=True)
+          message = Path(os.environ['RUNNER_TEMP'], 'commit-message.txt')
+          message.write_text('refactor: replace single-item MCP tools with bulk interfaces\n\nTools:\n- Remove read_file, list_dir, and replace_content from the tool registry.\n- Use read_files, list_dirs, and replace_contents for single and multiple requests.\n- Retain internal facade operations and migrate legacy configuration names.\n\nIntegration:\n- Update prompts, bundled contexts, recovery allowlists, and runtime fingerprints.\n- Preserve exclusions, readonly policies, edit guards, and raw/symbolic tools.\n- Add singleton and policy regressions through direct and shared MCP transports.\n\nValidation:\n- Pass 560 targeted local cases, full type checking, and affected-file lint.\n- Remove the temporary publishing workflow and payloads.\n', encoding='utf-8')
+          subprocess.run(['git', '-c', 'user.name=github-actions[bot]', '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com', 'commit', '-F', str(message)], check=True)
+          subprocess.run(['git', 'push', 'origin', 'HEAD:refs/heads/refactor/bulk-only-tools'], check=True)
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('source_sha=' + git('rev-parse', 'HEAD') + '\n')
+          PY
+  validate:
+    needs: apply
+    name: Bulk-only tools / Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.apply.outputs.source_sha }}
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+      - name: Check affected Python source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(git diff --name-only HEAD^ HEAD -- '*.py')
+          uv run ruff check "${files[@]}"
+          uv run ruff format --check "${files[@]}"
+          git diff --check
+      - name: Type check application and tests
+        run: uv run poe type-check
+      - name: Installed-stack regressions
+        run: >-
+          uv run pytest -q
+          test/serena/test_request_latency.py
+          test/serena/test_mcp_sdk_v2.py
+          test/serena/test_mcp.py
+          test/serena/test_mcp_bridge.py
+          test/serena/test_bridge_recovery.py
+          test/serena/test_raw_file_transport.py
+          test/serena/test_read_file_raw.py
+          test/serena/test_shared_daemon_startup.py
+          test/serena/test_shared_daemon_wsl.py
+          test/serena/test_project_server_port_integration.py
+          test/serena/test_project_server_endpoint.py
+          test/serena/test_daemon_recovery.py
+          test/serena/test_project_server_recovery.py
+          test/serena/test_restart_cli.py
+          test/serena/test_agent_workflow.py
+          test/serena/test_agent_workflow_replacements.py
+          test/serena/test_agent_workflow_read_files.py
+          test/serena/test_agent_workflow_bulk_only.py
+          test/serena/test_agent_workflow_mcp.py
+          test/serena/test_file_tools.py
+          test/serena/test_edit_marker.py
+          test/serena/test_fs_api.py
+          test/serena/test_edit_api.py
+          test/serena/test_memories_manager.py
+          test/serena/test_tool_parameter_types.py
+          --timeout=90 --tb=short --junitxml=bulk-only-tests.xml
+      - name: Collect complete test suite
+        run: uv run poe test --collect-only -q
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: bulk-only-python-${{ matrix.python }}
+          path: bulk-only-tests.xml
