@@ -12,6 +12,10 @@ Status of the `main` branch. Changes prior to the next official version change w
     see `CONTRIBUTING.md`
 
 * General:
+  - Fix: shared daemon startup recognizes interpreter children of Windows virtual-environment
+    launchers, preserving the healthy daemon instead of treating it as a competing process.
+  - Fix: loopback project-server startup no longer depends on reverse DNS, avoiding macOS resolver
+    stalls before the HTTP listener becomes ready.
   - **Major**: Add the Serena REPL as a new agent interface, reducing the tool set to a minimum and providing
     a general code execution environment for all Serena operations.
     This has several significant advantages over regular tool executions.  
@@ -89,6 +93,8 @@ Status of the `main` branch. Changes prior to the next official version change w
     thread (#2038)
 
 * Language Servers:
+  - Fix: explicit filesystem synchronization now bypasses the polling debounce, so immediate external
+    file creations, edits and deletions are visible to the next symbolic query.
   - Fix: Godot's GDScript parser can report a symbol's end column one column past the
     line-end convention every other language server follows (closing a node's range from
     the next lookahead token instead of the last consumed one, when that lookahead is a

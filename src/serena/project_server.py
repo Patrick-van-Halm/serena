@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+import ipaddress
 import json
 import logging
 import os
@@ -12,12 +13,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
+from socketserver import TCPServer
 from typing import TYPE_CHECKING, Any, Literal
 
 import requests as requests_lib
 from flask import Flask, Response, abort, request
+from flask.helpers import get_load_dotenv
 from pydantic import BaseModel, Field
 from sensai.util.logging import LogTime
+from werkzeug.serving import ThreadedWSGIServer
 
 from serena.config.serena_config import LanguageBackend, SerenaConfig, project_root_key, project_roots_equal
 from serena.constants import SerenaPorts
@@ -36,6 +40,24 @@ log = logging.getLogger(__name__)
 
 # disable Werkzeug's logging to avoid cluttering the output
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+
+class _ProjectHTTPServer(ThreadedWSGIServer):
+    """Threaded listener without reverse DNS for numeric loopback addresses."""
+
+    def server_bind(self) -> None:
+        # preserve normal hostname handling for non-loopback listeners
+        try:
+            is_loopback = ipaddress.ip_address(self.host).is_loopback
+        except ValueError:
+            is_loopback = False
+        if not is_loopback:
+            super().server_bind()
+            return
+
+        # avoid HTTPServer's blocking reverse lookup before the socket starts listening
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class QueryProjectRequest(BaseModel):
@@ -708,12 +730,19 @@ class ProjectServer:
         """
         from flask import cli
 
-        # suppress the default Flask startup banner
-        # ty cannot model reassigning a third-party module's function attribute (it rejects any
-        # replacement, even one with an identical signature), so the monkeypatch is suppressed here
-        cli.show_server_banner = lambda *args, **kwargs: None  # ty: ignore[invalid-assignment]
+        # retain Flask's environment loading and explicit non-debug configuration
+        if os.environ.get("FLASK_RUN_FROM_CLI") == "true":
+            return
+        if get_load_dotenv():
+            cli.load_dotenv()
+        self._app.debug = False
 
-        self._app.run(host=self._host, port=self._port, debug=False, use_reloader=False, threaded=True)
+        # own the listener so loopback startup cannot block on reverse DNS
+        try:
+            with _ProjectHTTPServer(self._host, self._port, self._app) as server:
+                server.serve_forever()
+        finally:
+            self._app._got_first_request = False
 
 
 class ProjectServerClient:

@@ -313,7 +313,8 @@ class LanguageServerManager:
         :return: the number of individual file change events detected (0 if nothing changed).
         """
         log.info("Polling file system for changes to source files ...")
-        num_changes = self._file_change_notifier.poll_and_notify()
+        # honor explicit synchronization even when external edits follow the previous poll immediately
+        num_changes = self._file_change_notifier.poll_and_notify(force=True)
         log.info(f"File system polling complete; {num_changes} change events sent to language servers.")
         return num_changes
 

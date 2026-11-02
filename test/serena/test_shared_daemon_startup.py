@@ -11,7 +11,6 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import psutil
 import pytest
@@ -145,9 +144,51 @@ def test_environment_port_is_used_by_spawn_and_client(daemon_environment, monkey
     assert config.project_server_port != override
 
 
-def test_endpoint_lock_blocks_same_endpoint_but_not_other_ports(daemon_environment) -> None:
+def test_started_daemon_child_remains_available(daemon_environment, monkeypatch) -> None:
+    # exercise a launcher parent on every platform, as Windows virtual environments use
+    daemon_command = SharedMCPDaemon._command
+    launches = []
+
+    class LauncherProcess(subprocess.Popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            launches.append((self, psutil.Process(self.pid)))
+
+    def command(self):
+        return [
+            sys.executable,
+            "-c",
+            "import subprocess, sys; raise SystemExit(subprocess.call(sys.argv[1:]))",
+            *daemon_command(self),
+        ]
+
+    monkeypatch.setattr(SharedMCPDaemon, "_command", command)
+    monkeypatch.setattr(subprocess, "Popen", LauncherProcess)
+    config = daemon_environment.config(unused_port())
+    try:
+        client = SharedMCPDaemon(config).ensure_running(10)
+        assert client.pid != launches[0][0].pid
+        assert SharedMCPDaemonClient(config).pid == client.pid
+        assert daemon_environment.records() == [
+            {"pid": client.pid, "port": config.project_server_port, "home": str(daemon_environment.home)}
+        ]
+    finally:
+        for process, identity in launches:
+            SharedMCPDaemon._stop_owned_child(process, identity)
+
+
+def test_endpoint_lock_blocks_same_endpoint_but_not_other_ports(daemon_environment, monkeypatch) -> None:
     first, second = unused_port(), unused_port()
     endpoint = ProjectServerEndpoint(host="localhost", port=first)
+    real_heartbeat = ProjectServerEndpoint.heartbeat
+
+    def heartbeat(endpoint, secret, timeout=5):
+        # isolate lock contention from the OS-specific time needed to refuse a TCP connection
+        if endpoint.port == first:
+            raise ProjectServerUnavailableError("not listening")
+        return real_heartbeat(endpoint, secret, timeout)
+
+    monkeypatch.setattr(ProjectServerEndpoint, "heartbeat", heartbeat)
     with FileLock(str(endpoint.startup_lock_path(daemon_environment.home))):
         with pytest.raises(ProjectServerStartupError, match="startup lock"):
             SharedMCPDaemon(daemon_environment.config(first)).ensure_running(0.1)
@@ -196,7 +237,8 @@ def test_replaces_only_owned_stale_listener_on_selected_port(daemon_environment,
 def test_spoofed_pid_cannot_kill_serena_on_another_port(daemon_environment) -> None:
     selected, other = unused_port(), unused_port()
     independent = daemon_environment.launch(other)
-    spoof = daemon_environment.launch(selected, build="old-build", pid=independent.pid)
+    independent_pid = ProjectServerEndpoint(port=other).heartbeat("startup-test-secret")["pid"]
+    spoof = daemon_environment.launch(selected, build="old-build", pid=independent_pid)
     with pytest.raises(ProjectServerEndpointError, match="not the listener"):
         SharedMCPDaemon(daemon_environment.config(selected)).ensure_running()
     assert independent.poll() is None and spoof.poll() is None
@@ -232,10 +274,18 @@ def test_startup_failure_surfaces_actual_stderr_and_reaps_child(daemon_environme
 def test_startup_timeout_reaps_only_owned_child(daemon_environment, monkeypatch) -> None:
     independent = daemon_environment.launch(unused_port())
     monkeypatch.setenv("DAEMON_TEST_MODE", "hang")
+
+    def heartbeat(endpoint, secret, timeout=5):
+        # a child that never opens its listener remains unavailable throughout startup
+        raise ProjectServerUnavailableError("not listening")
+
+    monkeypatch.setattr(ProjectServerEndpoint, "heartbeat", heartbeat)
     with pytest.raises(ProjectServerStartupError, match="deadline"):
         SharedMCPDaemon(daemon_environment.config(unused_port())).ensure_running(2.0)
     assert independent.poll() is None
-    assert not psutil.pid_exists(daemon_environment.records()[-1]["pid"])
+    records = daemon_environment.records()
+    assert len(records) == 2
+    assert not psutil.pid_exists(records[-1]["pid"])
 
 
 def test_newly_started_incompatible_daemon_is_cleaned_up(daemon_environment, monkeypatch) -> None:
@@ -251,9 +301,9 @@ def test_interruption_preserves_original_error_and_cleans_child(daemon_environme
     interrupt = KeyboardInterrupt()
 
     def heartbeat(endpoint, secret, timeout=5):
-        if daemon_environment.records():
-            raise interrupt
-        return real_heartbeat(endpoint, secret, timeout)
+        # interrupt after the child answers, regardless of when its first connection began
+        real_heartbeat(endpoint, secret, timeout)
+        raise interrupt
 
     monkeypatch.setattr(ProjectServerEndpoint, "heartbeat", heartbeat)
     with pytest.raises(KeyboardInterrupt) as caught:
@@ -277,7 +327,7 @@ def test_indeterminate_health_failure_is_not_treated_as_absence(daemon_environme
 
 def test_refused_connection_is_explicitly_classified() -> None:
     with pytest.raises(ProjectServerUnavailableError):
-        ProjectServerEndpoint(port=unused_port()).heartbeat("secret", timeout=0.5)
+        ProjectServerEndpoint(port=unused_port()).heartbeat("secret")
 
 
 def test_recheck_authentication_failure_does_not_spawn(daemon_environment, monkeypatch) -> None:
@@ -371,23 +421,23 @@ def test_stale_child_of_another_parent_can_be_replaced_without_killing_parent(da
 def test_unverifiable_ownership_leaves_listener_untouched(daemon_environment, monkeypatch, denial) -> None:
     port = unused_port()
     listener = daemon_environment.launch(port, build="old-build")
-    original_process = psutil.Process
+    listener_pid = ProjectServerEndpoint(port=port).heartbeat("startup-test-secret")["pid"]
+    ownership_method = "uids" if os.name == "posix" else "username"
+    original_ownership = getattr(psutil.Process, ownership_method)
 
-    def inspect_process(pid=None):
-        process = original_process(pid)
-        if pid != listener.pid:
-            return process
+    def inspect_ownership(process):
+        if process.pid != listener_pid:
+            return original_ownership(process)
         if denial == "access-denied":
-            raise psutil.AccessDenied(pid)
-        inspected = MagicMock(wraps=process)
-        inspected.username.return_value = "different-user"
+            raise psutil.AccessDenied(process.pid)
         if os.name == "posix":
-            inspected.uids.return_value = SimpleNamespace(real=os.getuid() + 1)
-        return inspected
+            return SimpleNamespace(real=os.getuid() + 1)
+        return "different-user"
 
     with monkeypatch.context() as patch:
-        patch.setattr(psutil, "Process", inspect_process)
-        with pytest.raises(ProjectServerEndpointError):
+        patch.setattr(psutil.Process, ownership_method, inspect_ownership)
+        reason = "Cannot verify ownership" if denial == "access-denied" else "not a Serena project server owned by this user"
+        with pytest.raises(ProjectServerEndpointError, match=reason):
             SharedMCPDaemon(daemon_environment.config(port)).ensure_running(5)
     assert listener.poll() is None
     assert len(daemon_environment.records()) == 1

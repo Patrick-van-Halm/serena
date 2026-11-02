@@ -62,21 +62,33 @@ def test_task_executor_cancel_current(executor):
     Cancelling the public future must not allow a still-running task to overlap
     the next task; the executor remains linear until the underlying thread exits.
     """
-    task1 = Task(0.25)
-    task2 = Task(0.01)
-    future1 = executor.issue_task(task1.run, name="task1")
-    future2 = executor.issue_task(task2.run, name="task2")
-    time.sleep(0.05)
-    future1.cancel()
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    second_started = threading.Event()
 
-    with pytest.raises(Exception) as exc:
-        future1.result()
-    assert exc.value.__class__.__name__ == "CancelledError"
+    def first():
+        started.set()
+        assert release.wait(2)
+        finished.set()
 
-    time.sleep(0.05)
-    assert not task2.did_run
+    def second():
+        second_started.set()
+        assert finished.is_set()
+        return True
+
+    future1 = executor.issue_task(first, name="task1")
+    future2 = executor.issue_task(second, name="task2")
+    try:
+        assert started.wait(1)
+        future1.cancel()
+        with pytest.raises(CancelledError):
+            future1.result(timeout=1)
+        assert not second_started.wait(0.05)
+    finally:
+        release.set()
     assert future2.result(timeout=1) is True
-    assert task2.did_run
+    assert second_started.is_set()
 
 
 def test_task_executor_cancel_future(executor):

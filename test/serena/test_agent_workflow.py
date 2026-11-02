@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -102,14 +103,18 @@ def test_ignored_entries_are_also_bounded(directory_project):
 
 def test_serialized_output_bound(directory_project):
     root = Path(directory_project.project_root) / "one"
+    # use escaped filenames where supported and an escaped request identity on every platform
+    name_character = "x" if os.name == "nt" else '"'
     for index in range(100):
-        (root / (str(index) + '"' * 100)).touch()
+        (root / (str(index) + name_character * 100)).touch()
+    missing = 'missing "directory"'
     text = DirectoryBatchReader(directory_project).read(
-        [DirectoryRequest(relative_path="one"), DirectoryRequest(relative_path="missing")], 200, 2048
+        [DirectoryRequest(relative_path="one"), DirectoryRequest(relative_path=missing)], 200, 2048
     )
     assert len(text) <= 2048
     rows = json.loads(text)["results"]
     assert "response_limit" in rows[0]["reasons"]
+    assert rows[1]["relative_path"] == missing
     assert rows[1]["error"]
 
 

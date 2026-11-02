@@ -284,8 +284,13 @@ class SharedMCPDaemon:
                         last_error = error
                         time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
                     else:
-                        # a manually started compatible daemon may have won the bind race
-                        if client.pid != process.pid:
+                        # Windows venv redirectors run the interpreter as a child of the launched process
+                        owned_pids = {process.pid}
+                        if owned_process is not None and client.pid != process.pid:
+                            owned_pids.update(child.pid for child in owned_process.children(recursive=True) if child.is_running())
+
+                        # clean up our attempt only when an independent daemon won the bind race
+                        if client.pid not in owned_pids:
                             self._stop_owned_child(process, owned_process)
                         log.info("Shared Serena daemon ready at %s; startup log: %s", self._endpoint.base_url, log_path)
                         return client
