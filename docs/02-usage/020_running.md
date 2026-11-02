@@ -110,6 +110,11 @@ from which Serena was started. Passing `--project <directory>` selects that dire
 root even if it has no Serena project configuration; startup does not create one automatically.
 The same fallback applies to `--project-from-cwd` when no configured project is found.
 
+Memory tools and the `s.mem` REPL API can list, read, write, edit, rename, and delete global memories
+without an active project. Use names such as `global/notes`; names without the `global/` prefix
+remain project-local and require an active project. Global read-only and ignored-memory settings
+still apply. Project onboarding also requires an active project.
+
 Language-aware operations, including symbol lookup, references, and symbolic edits, still require
 an active project. Use `activate_project` when these operations are needed. Tool availability still
 follows the selected context and modes, and filesystem access restrictions remain in effect.

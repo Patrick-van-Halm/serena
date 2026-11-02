@@ -18,6 +18,7 @@ def api(tmp_path: Path) -> MemoryApi:
     project = Project.load(str(tmp_path), serena_config=SerenaConfig(gui_log_window=False, web_dashboard=False))
     agent = MagicMock()
     agent.get_active_project_or_raise.return_value = project
+    agent.get_memory_manager.return_value = project.memory_manager
     agent.serena_config.default_max_tool_answer_chars = 10000
     return MemoryApi(agent)
 

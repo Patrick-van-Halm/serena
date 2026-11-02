@@ -1160,7 +1160,7 @@ class SerenaAgent:
 
         def embed_memory(memory_name: str) -> str:
             try:
-                memory_manager = self._get_memory_manager()
+                memory_manager = self.get_memory_manager()
                 return self._format_prompt_tag(memory_manager.load_memory(memory_name), tag="memory", tag_name_attr=memory_name)
             except Exception as e:
                 log.error("Tried to embed memory '%s' but failed to load it: %s", memory_name, e)
@@ -1192,9 +1192,13 @@ class SerenaAgent:
         """
         :return: a memory manager for global memories only (no project memories)
         """
-        return MemoryManager(serena_data_folder=None, read_only_memory_patterns=self.serena_config.read_only_memory_patterns)
+        return MemoryManager(
+            serena_data_folder=None,
+            read_only_memory_patterns=self.serena_config.read_only_memory_patterns,
+            ignored_memory_patterns=self.serena_config.ignored_memory_patterns,
+        )
 
-    def _get_memory_manager(self) -> MemoryManager:
+    def get_memory_manager(self) -> MemoryManager:
         """
         :return: the memory manager for the active project (if any) or a global memory manager if no project is active
         """
@@ -1259,7 +1263,8 @@ class SerenaAgent:
             system_prompt += (
                 f"\n\nNo project is active. Filesystem and shell operations use the working directory `{self._working_directory}`. "
                 "They do not require a Serena project or project configuration. "
-                "Language-aware operations require activating a project."
+                "Memory tools can access shared memories using the `global/` prefix. "
+                "Language-aware operations, project memories, and onboarding require activating a project."
             )
             if self._project_activation_error:
                 system_prompt += f"\nProject activation was unavailable: {self._project_activation_error}"

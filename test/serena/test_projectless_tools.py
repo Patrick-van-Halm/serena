@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""File and shell operations without a configured Serena project."""
+"""File, shell, and global memory operations without a configured Serena project."""
 
 import base64
 import json
@@ -14,6 +14,7 @@ from mcp_types import CallToolResult, EmbeddedResource
 from serena.agent import SerenaAgent
 from serena.config.context_mode import SerenaAgentContext
 from serena.config.serena_config import LanguageBackend, SerenaConfig
+from serena.memories.memory_manager import MemoryManager
 from serena.repl.api.edit_api import EditApi
 from serena.repl.api.fs_api import FsApi
 from serena.tools import ToolCallError
@@ -195,3 +196,93 @@ def test_activation_switches_file_root_and_applies_project_permissions(agent: Se
         agent.get_tool_by_name("create_text_file").apply_ex(relative_path="note.txt", content="denied", catch_exceptions=False)
     assert (root / "note.txt").read_text(encoding="utf-8") == "configured project"
     assert (tmp_path / "workspace/note.txt").read_text(encoding="utf-8") == "workspace"
+
+
+@pytest.fixture
+def global_memories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    directory = tmp_path / "global-memories"
+    directory.mkdir()
+    monkeypatch.setattr(MemoryManager, "_global_memory_dir", directory)
+    return directory
+
+
+@pytest.mark.parametrize("interface", ["tools", "repl"])
+def test_global_memory_lifecycle_without_a_project(agent: SerenaAgent, global_memories: Path, tmp_path: Path, interface: str) -> None:
+    def call(name: str, **kwargs: str) -> str:
+        if interface == "repl":
+            arguments = ", ".join(f"{key}={value!r}" for key, value in kwargs.items())
+            result = agent.get_tool_by_name("serena_repl").apply_ex(
+                session="global-notes", code=f"s.mem.{name}({arguments})", catch_exceptions=False
+            )
+        else:
+            result = agent.get_tool_by_name(name).apply_ex(**kwargs, catch_exceptions=False)
+        assert isinstance(result, str)
+        return result
+
+    # maintain shared notes and their references through either public interface
+    call("write_memory", memory_name="global/preferences", content="Prefer concise explanations.")
+    call("write_memory", memory_name="global/index", content="See `mem:global/preferences`.")
+    assert call("read_memory", memory_name="global/preferences") == "Prefer concise explanations."
+    assert json.loads(call("list_memories"))["memories"] == ["global/index", "global/preferences"]
+    call("edit_memory", memory_name="global/preferences", needle="concise", repl="detailed", mode="literal")
+    call("rename_memory", old_name="global/preferences", new_name="global/style")
+    assert call("read_memory", memory_name="global/style") == "Prefer detailed explanations."
+    assert call("read_memory", memory_name="global/index") == "See `mem:global/style`."
+    call("delete_memory", memory_name="global/style")
+    assert json.loads(call("list_memories", topic="global"))["memories"] == ["global/index"]
+    assert (global_memories / "index.md").read_text(encoding="utf-8") == "See `mem:global/style`."
+    assert agent.get_active_project() is None
+    assert not (tmp_path / "workspace/.serena").exists()
+
+
+def test_projectless_memories_preserve_scope_and_access_rules(agent: SerenaAgent, global_memories: Path) -> None:
+    # global-only access cannot silently create or move a memory into local scope
+    agent.get_tool_by_name("write_memory").apply_ex(memory_name="global/target", content="shared", catch_exceptions=False)
+    with pytest.raises(ToolCallError, match="No active project.*global/"):
+        agent.get_tool_by_name("write_memory").apply_ex(memory_name="local", content="denied", catch_exceptions=False)
+    with pytest.raises(ToolCallError, match="No active project.*global/"):
+        agent.get_tool_by_name("rename_memory").apply_ex(old_name="global/target", new_name="local", catch_exceptions=False)
+    assert (global_memories / "target.md").read_text(encoding="utf-8") == "shared"
+
+    # preserve read-only and ignored global memories, including rename sources
+    agent.serena_config.read_only_memory_patterns = ["global/locked"]
+    agent.serena_config.ignored_memory_patterns = ["global/ignored"]
+    (global_memories / "locked.md").write_text("See `mem:global/target`.", encoding="utf-8")
+    (global_memories / "ignored.md").write_text("private", encoding="utf-8")
+
+    # topic traversal must not expose memory names from the parent directory
+    (global_memories.parent / "private-outside.md").write_text("outside the memory store", encoding="utf-8")
+    with pytest.raises(ToolCallError, match="outside the memories directory"):
+        agent.get_tool_by_name("list_memories").apply_ex(topic="global/..", catch_exceptions=False)
+    listed = json.loads(agent.get_tool_by_name("list_memories").apply_ex(catch_exceptions=False))
+    assert listed == {"memories": ["global/target"], "read_only_memories": ["global/locked"]}
+    for name, arguments, error in [
+        ("write_memory", {"memory_name": "global/locked", "content": "denied"}, "read_only"),
+        ("write_memory", {"memory_name": "global/locked.md.md", "content": "denied"}, "read_only"),
+        ("write_memory", {"memory_name": "global/./locked", "content": "denied"}, "segments"),
+        ("edit_memory", {"memory_name": "global/locked", "needle": "See", "repl": "denied", "mode": "literal"}, "read_only"),
+        ("delete_memory", {"memory_name": "global/locked"}, "read_only"),
+        ("rename_memory", {"old_name": "global/locked", "new_name": "global/moved"}, "read_only"),
+        ("read_memory", {"memory_name": "global/ignored"}, "ignored_memory_patterns"),
+        ("read_memory", {"memory_name": "global/ignored.md.md"}, "ignored_memory_patterns"),
+        ("read_memory", {"memory_name": "mem:mem:global/ignored"}, "ignored_memory_patterns"),
+        ("write_memory", {"memory_name": "global/ignored", "content": "denied"}, "ignored_memory_patterns"),
+        ("rename_memory", {"old_name": "global/ignored", "new_name": "global/moved"}, "ignored_memory_patterns"),
+    ]:
+        with pytest.raises(ToolCallError, match=error):
+            agent.get_tool_by_name(name).apply_ex(**arguments, catch_exceptions=False)
+    assert (global_memories / "ignored.md").read_text(encoding="utf-8") == "private"
+
+    # renaming a writable memory succeeds without rewriting protected references
+    agent.get_tool_by_name("rename_memory").apply_ex(old_name="global/target", new_name="global/renamed", catch_exceptions=False)
+    assert (global_memories / "renamed.md").read_text(encoding="utf-8") == "shared"
+
+    assert (global_memories / "locked.md").read_text(encoding="utf-8") == "See `mem:global/target`."
+
+
+def test_projectless_onboarding_is_rejected_despite_global_maintenance_memory(agent: SerenaAgent, global_memories: Path) -> None:
+    (global_memories / "memory_maintenance.md").write_text("Shared conventions.", encoding="utf-8")
+    with pytest.raises(ToolCallError, match="No active project"):
+        agent.get_tool_by_name("onboarding").apply_ex(catch_exceptions=False)
+    result = agent.get_tool_by_name("serena_repl").apply_ex(session="global-notes", code="s.mem.onboarding()", catch_exceptions=False)
+    assert "No active project" in result
