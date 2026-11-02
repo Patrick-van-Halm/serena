@@ -341,7 +341,7 @@ class TestFacade:
         lsp_facade = Facade.from_api(LspApi(MagicMock()), ApiScope())
         info = lsp_facade.get_method("find_symbol").info
         assert info.corresponding_tool is FindSymbolTool
-        assert info.get_corresponding_tool_name() == "find_symbol"
+        assert info.get_corresponding_tool_name() == "find_symbols"
 
     def test_method_info_mirrors_decorator(self) -> None:
         facade = Facade.from_api(self.DummyApi(MagicMock()), ApiScope())

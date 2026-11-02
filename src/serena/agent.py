@@ -133,6 +133,39 @@ class ToolSet:
         "replace_content": ReplaceContentsTool.get_name_from_cls(),
         "read_file": "read_files",
         "list_dir": "list_dirs",
+        "create_text_file": "create_text_files",
+        "find_file": "find_files",
+        "delete_path": "delete_paths",
+        "copy_path": "copy_paths",
+        "move_path": "move_paths",
+        "delete_lines": "delete_lines_in_files",
+        "replace_lines": "replace_lines_in_files",
+        "insert_at_line": "insert_at_lines",
+        "search_for_pattern": "search_for_patterns",
+        "read_file_raw": "read_files_raw",
+        "write_memory": "write_memories",
+        "read_memory": "read_memories",
+        "delete_memory": "delete_memories",
+        "rename_memory": "rename_memories",
+        "edit_memory": "edit_memories",
+        "get_symbols_overview": "get_symbols_overviews",
+        "find_symbol": "find_symbols",
+        "find_declaration": "find_declarations",
+        "get_diagnostics_for_file": "get_diagnostics_for_files",
+        "get_diagnostics_for_symbol": "get_diagnostics_for_symbols",
+        "replace_symbol_body": "replace_symbol_bodies",
+        "insert_after_symbol": "insert_after_symbols",
+        "insert_before_symbol": "insert_before_symbols",
+        "rename_symbol": "rename_symbols",
+        "safe_delete_symbol": "safe_delete_symbols",
+        "jet_brains_find_symbol": "jet_brains_find_symbols",
+        "jet_brains_get_symbols_overview": "jet_brains_get_symbols_overviews",
+        "jet_brains_find_declaration": "jet_brains_find_declarations",
+        "jet_brains_type_hierarchy": "jet_brains_type_hierarchies",
+        "jet_brains_move": "jet_brains_move_items",
+        "jet_brains_rename": "jet_brains_rename_items",
+        "jet_brains_safe_delete": "jet_brains_safe_delete_items",
+        "jet_brains_inline_symbol": "jet_brains_inline_symbols",
     }
     """
     maps legacy configuration names to current tools; obsolete MCP calls are not routed
@@ -1101,11 +1134,15 @@ class SerenaAgent:
             available_tool_names = set(self._exposed_tools.tool_names)
             available_tool_marker_names = set(self._exposed_tools.tool_marker_names)
 
-            tool_name_mapping = dict(ToolSet.LEGACY_TOOL_NAME_MAPPING)
+            tool_name_mapping = {}
             class_replacements = self._language_backend.get_lsp_tool_class_replacements()
             for tool_class in ToolRegistry().get_all_tool_classes():
                 new_tool_class: type[Tool] = class_replacements.get(tool_class, tool_class)
                 tool_name_mapping[tool_class.get_name_from_cls()] = new_tool_class.get_name_from_cls()
+
+            # resolve legacy names through the selected backend as well
+            for legacy_name, new_name in ToolSet.LEGACY_TOOL_NAME_MAPPING.items():
+                tool_name_mapping[legacy_name] = tool_name_mapping.get(new_name, new_name)
 
         elif self._agent_interface == AgentInterface.REPL:
             # available tool names include both the names of the facade methods and the names of the corresponding tools

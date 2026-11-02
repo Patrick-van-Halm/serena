@@ -33,7 +33,7 @@ class ReplaceContentsTool(Tool, ToolMarkerDoesNotRequireActiveProject, ToolMarke
         uses Python MULTILINE/DOTALL and $!1 group backreferences. Entries for the same
         canonical file are evaluated in input order against the staged text.
         Hash guards always refer to the original editor text encoded as UTF-8;
-        dry_run returns these hashes. They are not read_file_raw byte hashes.
+        dry_run returns these hashes. They are not read_files_raw byte hashes.
 
         All entries are preflighted before writing; a validation failure changes no
         files. Each changed file is written once through Serena's existing editor.

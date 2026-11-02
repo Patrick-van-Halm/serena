@@ -1,6 +1,7 @@
 """Installed-SDK transport tests, including real Serena stdio subprocesses."""
 
 import base64
+import json
 import os
 import socket
 import subprocess
@@ -117,35 +118,42 @@ def test_stdio_survives_errors_parallel_calls_and_native_images(isolated_project
                     assert client.server_info.name == "Serena"
                     assert client.server_info.version == __version__
                     names = {tool.name for tool in (await client.list_tools()).tools}
-                    assert {"read_files", "read_file_raw", "list_dirs", "execute_shell_command"} <= names
-                    failed = await client.call_tool("read_file_raw", {"relative_path": "missing-file.txt"})
-                    assert failed.is_error and "FileNotFoundError" in text_of(failed)
+                    assert {"read_files", "read_files_raw", "list_dirs", "execute_shell_command"} <= names
+                    failed = await client.call_tool("read_files_raw", {"files": [{"relative_path": "hello.txt", "max_bytes": 0}]})
+                    assert failed.is_error
                     results = []
 
                     async def read_one(index: int) -> None:
                         path = "missing-file.txt" if index % 3 == 0 else "hello.txt"
                         result = await client.call_tool(
-                            "read_file_raw" if index % 3 == 0 else "read_files",
-                            {"relative_path": path} if index % 3 == 0 else {"files": [{"relative_path": path}]},
+                            "read_files_raw" if index % 3 == 0 else "read_files",
+                            {"files": [{"relative_path": path}]},
                         )
                         results.append(result)
 
                     async with anyio.create_task_group() as group:
                         for index in range(12):
                             group.start_soon(read_one, index)
-                    assert sum(bool(result.is_error) for result in results) == 4
-                    assert all("SDK migration works" in text_of(result) for result in results if not result.is_error)
-                    image_result = await client.call_tool("read_file_raw", {"relative_path": "image.png"})
+                    assert all(not result.is_error for result in results)
+                    assert sum("FileNotFoundError" in text_of(result) for result in results) == 4
+                    assert sum("SDK migration works" in text_of(result) for result in results) == 8
+                    image_result = await client.call_tool(
+                        "read_files_raw",
+                        {"files": [{"relative_path": "image.png"}, {"relative_path": "missing-file.txt"}, {"relative_path": "hello.txt"}]},
+                    )
                     assert not image_result.is_error
                     image = next(block for block in image_result.content if isinstance(block, ImageContent))
                     assert image.mime_type == "image/png" and base64.b64decode(image.data) == PNG
+                    rows = [json.loads(block.text) for block in image_result.content if isinstance(block, TextContent)]
+                    assert [(row["index"], row["status"]) for row in rows] == [(0, "completed"), (1, "error"), (2, "completed")]
+                    assert "FileNotFoundError" in rows[1]["error"]
                     listing = await client.call_tool("list_dirs", {"directories": [{"relative_path": ".", "recursive": False}]})
                     assert not listing.is_error and "hello.txt" in text_of(listing)
                     shell = await client.call_tool("execute_shell_command", {"command": "echo sdk-shell-ok"})
                     assert not shell.is_error and "sdk-shell-ok" in text_of(shell)
                     if mode == "legacy":
                         await client.session.send_ping()
-                    assert "read_file_raw" in {tool.name for tool in (await client.list_tools()).tools}
+                    assert "read_files_raw" in {tool.name for tool in (await client.list_tools()).tools}
 
         anyio.run(exercise)
     finally:
@@ -285,8 +293,8 @@ def test_http_cli_binds_requested_endpoint_and_survives_client_disconnect(isolat
                         async with Client(target, mode=mode, read_timeout_seconds=10) as client:
                             assert client.server_info.version == __version__
                             assert "read_files" in {tool.name for tool in (await client.list_tools()).tools}
-                            missing = await client.call_tool("read_file_raw", {"relative_path": "missing-file.txt"})
-                            assert missing.is_error
+                            missing = await client.call_tool("read_files_raw", {"files": [{"relative_path": "missing-file.txt"}]})
+                            assert not missing.is_error and "FileNotFoundError" in text_of(missing)
                             good = await client.call_tool("read_files", {"files": [{"relative_path": "hello.txt"}]})
                             assert not good.is_error and "SDK migration works" in text_of(good)
 

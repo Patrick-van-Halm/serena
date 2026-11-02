@@ -13,7 +13,7 @@ prompts:
     the symbolic functions to get an overview of symbols and their relations, then reading only the bodies
     you need. {% if 'ToolMarkerSymbolicRead' in available_markers %}Once you have read a full file, there is no point re-analysing it with the symbolic read
     tools — you already have it.{% endif %} 
-    {% if 'search_for_pattern' in available_tools %}
+    {% if 'search_for_patterns' in available_tools or 'search_for_pattern' in available_tools %}
     For searches beyond named symbols, you can use `{{ tool_names['search_for_pattern'] }}` and flexible search for patterns in the codebase.{% if 'ToolMarkerSymbolicRead' in available_markers %} In this way, you can first find candidates for symbols or files to explore,
     and then proceed with symbolic operations.{% endif %}
     {% endif %}
@@ -29,7 +29,7 @@ prompts:
     You can understand relationships between symbols by using `{{ tool_names['find_referencing_symbols'] }}`.
     {% endif %}
     
-    {% if 'read_memory' in available_tools -%}
+    {% if 'read_memories' in available_tools or 'read_memory' in available_tools -%}
     You generally have access to memories and it may be useful for you to read them.
     You infer whether memories are relevant based on their names.
     {% if global_memories_list -%}
@@ -40,6 +40,14 @@ prompts:
     Line numbers returned by Serena's tools are 0-based!
 
     Request planning:
+    {% if 'serena_repl' not in available_tools %}
+    Use a one-item request array for one target when a tool exposes an array parameter.
+    Use the array parameter shown in the tool schema; options such as include_body and depth belong inside each item.
+    Group up to eight independent requests per call, except where a specialized tool documents different limits.
+    Read batches retain individual errors. Editing batches execute in order and are not atomic: completed means
+    an operation returned, so inspect its result for refusals or preview-only outcomes. After an unknown outcome,
+    later items are not applied. Check state before retrying interrupted edits.
+    {% endif %}
     {% if 'read_files' in available_tools and 'read_file' not in available_tools %}
     Use `{{ tool_names['read_files'] }}` for text reads, including one file: pass a one-item `files` array.
     {% endif %}
@@ -52,8 +60,8 @@ prompts:
     After reading applicable instructions, including scoped AGENTS.md files, request small batches of
     already-known, independent reads together rather than requesting each separately. Do not guess paths
     or inputs to make a batch. Calls sharing a Serena project runtime execute serially, so large batches
-    do not make them execute in parallel. Use sequential calls for edits and operations that depend on
-    earlier results. A timeout does not prove that a running operation stopped. Check the resulting state
+    do not make them execute in parallel. Use separate calls when a later input depends on an earlier result.
+    A timeout does not prove that a running operation stopped. Check the resulting state
     before repeating a modifying operation.
 
     Scope pattern searches to relevant directories and file globs; broaden the search when the scoped
@@ -103,19 +111,23 @@ prompts:
 
     ## Mapping (use the right column, not the left)
 
+    Names below describe the classic LSP interface unless prefixed with jet_brains_.
+    For JetBrains or REPL configurations, follow initial_instructions and the active tool schema
+    for the corresponding backend or facade names.
+
     Task                                    Tool to use
     --------------------------------------  ----------------------------------------
-    See a code file's structure             get_symbols_overview
-    Read a specific symbol's body           find_symbol (include_body=true)
-    Find a symbol by name across the repo   find_symbol
+    See a code file's structure             get_symbols_overviews
+    Read a specific symbol's body           find_symbols (include_body=true)
+    Find a symbol by name across the repo   find_symbols
     Find references / callers               find_referencing_symbols
-    Find declarations / implementations     find_declaration / _find_implementations
-    Edit a symbol's body                    replace_symbol_body
-    Insert near a symbol                    insert_before_symbol / _insert_after_symbol
+    Find declarations / implementations     find_declarations / find_implementations
+    Edit a symbol's body                    replace_symbol_bodies
+    Insert near a symbol                    insert_before_symbols / insert_after_symbols
     Pattern replace in one or more files    replace_contents
-    Rename / move / delete a symbol         rename / _move / _safe_delete
-    Inline a symbol                         inline_symbol
-    Type hierarchy                          type_hierarchy
+    Rename / delete a symbol                rename_symbols / safe_delete_symbols
+    JetBrains move / inline                 jet_brains_move_items / jet_brains_inline_symbols
+    JetBrains type hierarchy                jet_brains_type_hierarchies
 
     Built-in Read/Edit/Glob/Grep are permitted on code files ONLY when:
     - Serena has been tried on the target and failed, OR
@@ -131,10 +143,13 @@ prompts:
 
     ## Required workflow before editing code
 
-    1. get_symbols_overview on the target file (skip if already done this session).
-    2. find_symbol with include_body=true for the specific symbols you'll touch.
+    Classic MCP calls accept request arrays even for one target; place each target and its options inside the array item.
+    REPL facade methods retain their scalar arguments.
+
+    1. get_symbols_overviews on the target file (skip if already done this session).
+    2. find_symbols with include_body=true for the specific symbols you'll touch.
        Read only the symbols you need — not the whole file.
-    3. Edit with replace_symbol_body, insert_before_symbol, insert_after_symbol, or
+    3. Edit with replace_symbol_bodies, insert_before_symbols, insert_after_symbols, or
        replace_contents (a one-item replacements array for one edit). Never use the built-in Edit on a code file when one of these
        fits.
 

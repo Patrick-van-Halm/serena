@@ -74,7 +74,8 @@ class {class_name}(PromptFactoryBase):
     # ---- add methods based on prompt template names and parameters and prompt list names ----
     prompt_collection = MultiLangPromptCollection(prompts_dir)
 
-    for template_name in prompt_collection.get_prompt_template_names():
+    # Canonicalize emitted method order without changing prompt lookup precedence.
+    for template_name in sorted(prompt_collection.get_prompt_template_names()):
         template_parameters = prompt_collection.get_prompt_template_parameters(template_name)
         if len(template_parameters) == 0:
             method_params_str = ""
@@ -87,7 +88,7 @@ class {class_name}(PromptFactoryBase):
     def create_{template_name}(self{method_params_str}) -> str:
         return self._render_prompt('{template_name}', locals())
 """
-    for prompt_list_name in prompt_collection.get_prompt_list_names():
+    for prompt_list_name in sorted(prompt_collection.get_prompt_list_names()):
         generated_code += f"""
     def get_list_{prompt_list_name}(self) -> PromptList:
         return self._get_prompt_list('{prompt_list_name}')

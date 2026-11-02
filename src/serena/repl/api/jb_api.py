@@ -249,7 +249,9 @@ class JetBrainsApi(FacadeApi):
         :return: the symbols matching the pattern
         """
         if name_path_pattern.replace("*", "").replace("/", "") == "":
-            raise ValueError("name_path_pattern must not be empty or contain only wildcards; consider using get_symbols_overview")
+            raise ValueError(
+                "name_path_pattern must not be empty or contain only wildcards; request a symbols overview for a specific file"
+            )
 
         if include_body:
             depth = 0  # ignore user-specified depth if body is requested

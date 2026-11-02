@@ -220,7 +220,7 @@ The hooks will:
 - **`cleanup`**: Clean up hook session data when the session ends.
 - **`auto-approve`**: Auto-approve Serena tool calls whenever Claude Code is in a permissive
   permission mode (`acceptEdits` or `auto`), so blanket approvals cover Serena's destructive
-  tools (e.g. `replace_symbol_body`, `rename_symbol`) instead of prompting on every call.
+  tools (e.g. `replace_symbol_bodies`, `rename_symbols`) instead of prompting on every call.
 
 For more details on Claude Code's hook system, see the
 [Claude Code hooks documentation](https://code.claude.com/docs/en/hooks).
@@ -714,7 +714,7 @@ CodeBuddy supports the same hook system as Claude Code. To set up hooks, add the
 - **`cleanup`**: Clean up hook session data when the session ends.
 - **`auto-approve`**: Auto-approve Serena tool calls whenever CodeBuddy is in a permissive
   permission mode (`acceptEdits` or `auto`), so blanket approvals cover Serena's destructive
-  tools (e.g. `replace_symbol_body`, `rename_symbol`) instead of prompting on every call.
+  tools (e.g. `replace_symbol_bodies`, `rename_symbols`) instead of prompting on every call.
 
 ## Other Clients
 

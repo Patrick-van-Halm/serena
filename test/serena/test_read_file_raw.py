@@ -13,8 +13,9 @@ import pytest
 from mcp_types import BlobResourceContents, CallToolResult, EmbeddedResource, ImageContent, TextContent
 
 from serena.project import Project
-from serena.tools.raw_file_tools import ReadFileRawTool
+from serena.tools.raw_file_tools import ReadFilesRawTool
 from serena.util.raw_file import RawFileContent
+from serena.util.tool_call import ToolCall, ToolCallContext, ToolCallInterrupted
 from serena.util.tool_result import ToolResultCodec
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aMXsAAAAASUVORK5CYII=")
@@ -34,7 +35,7 @@ def test_png_bytes_are_native_image_content(raw_project: Project) -> None:
     agent = MagicMock()
     agent.get_active_project_or_raise.return_value = raw_project
     agent.get_file_system_project.return_value = raw_project
-    result = ReadFileRawTool(agent).apply("screenshot.bin")
+    result = ReadFilesRawTool(agent).apply([{"relative_path": "screenshot.bin"}])
 
     assert isinstance(result, CallToolResult)
     assert not result.is_error
@@ -46,7 +47,96 @@ def test_png_bytes_are_native_image_content(raw_project: Project) -> None:
     metadata = json.loads(result.content[0].text)
     assert metadata["size_bytes"] == len(PNG)
     assert metadata["sha256"] == hashlib.sha256(PNG).hexdigest()
-    assert not ReadFileRawTool.can_edit()
+    assert metadata["index"] == 0 and metadata["relative_path"] == "screenshot.bin"
+    assert metadata["status"] == "completed" and metadata["error"] is None
+    assert not ReadFilesRawTool.can_edit()
+
+
+def test_raw_batch_preserves_native_siblings_and_reports_each_request(raw_project: Project) -> None:
+    root = Path(raw_project.project_root)
+    (root / "image.png").write_bytes(PNG)
+    (root / "data.bin").write_bytes(b"\x00\xff")
+    agent = MagicMock()
+    agent.get_active_project_or_raise.return_value = raw_project
+    agent.get_file_system_project.return_value = raw_project
+
+    result = ReadFilesRawTool(agent).apply(
+        [{"relative_path": "image.png"}, {"relative_path": "missing.bin"}, {"relative_path": "data.bin"}]
+    )
+
+    assert not result.is_error
+    rows = [json.loads(block.text) for block in result.content if isinstance(block, TextContent)]
+    assert [(row["index"], row["relative_path"], row["status"]) for row in rows] == [
+        (0, "image.png", "completed"),
+        (1, "missing.bin", "error"),
+        (2, "data.bin", "completed"),
+    ]
+    assert "FileNotFoundError" in rows[1]["error"]
+    assert isinstance(result.content[1], ImageContent)
+    assert base64.b64decode(result.content[1].data) == PNG
+    binary = result.content[4]
+    assert isinstance(binary, EmbeddedResource) and isinstance(binary.resource, BlobResourceContents)
+    assert base64.b64decode(binary.resource.blob) == b"\x00\xff"
+
+
+def test_total_byte_budget_rejects_whole_items_without_starving_smaller_siblings(raw_project: Project) -> None:
+    root = Path(raw_project.project_root)
+    for name, content in {"large": b"12345", "first": b"123", "too_much": b"12", "last": b"4"}.items():
+        (root / name).write_bytes(content)
+    agent = MagicMock()
+    agent.get_active_project_or_raise.return_value = raw_project
+    agent.get_file_system_project.return_value = raw_project
+
+    result = ReadFilesRawTool(agent).apply([{"relative_path": name} for name in ["large", "first", "too_much", "last"]], max_total_bytes=4)
+
+    rows = [json.loads(block.text) for block in result.content if isinstance(block, TextContent)]
+    assert [row["status"] for row in rows] == ["error", "completed", "error", "completed"]
+    assert [row["size_bytes"] for row in rows if row["status"] == "completed"] == [3, 1]
+    resources = [block.resource for block in result.content if isinstance(block, EmbeddedResource)]
+    assert all(isinstance(resource, BlobResourceContents) for resource in resources)
+    assert [base64.b64decode(resource.blob) for resource in resources] == [b"123", b"4"]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"files": []},
+        {"files": [{"relative_path": "first"}] * 9},
+        {"files": [{"relative_path": "first"}, {"relative_path": "second", "max_bytes": True}]},
+        {"files": [{"relative_path": "first"}, {"relative_path": "second", "unknown": 1}]},
+        {"files": [{"relative_path": "first"}, {"relative_path": ""}]},
+        {"files": [{"relative_path": "first"}], "max_total_bytes": "10"},
+        {"files": [{"relative_path": "first"}], "max_total_bytes": 0},
+        {"files": [{"relative_path": "first"}], "max_total_bytes": RawFileContent.HARD_MAX_BYTES + 1},
+    ],
+)
+def test_raw_batch_validates_all_requests_before_io(arguments, monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("Malformed batches must not read any files")
+
+    monkeypatch.setattr(RawFileContent, "read", unexpected_read)
+    with pytest.raises(ValueError):
+        ReadFilesRawTool(MagicMock()).apply(**arguments)
+
+
+def test_raw_batch_cancellation_prevents_later_reads(raw_project: Project, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = Path(raw_project.project_root)
+    (root / "first").write_bytes(b"first")
+    agent = MagicMock()
+    agent.get_active_project_or_raise.return_value = raw_project
+    agent.get_file_system_project.return_value = raw_project
+    call = ToolCall(10)
+    read = RawFileContent.read
+
+    def cancel_after_read(project, relative_path, max_bytes):
+        assert relative_path == "first", "Cancellation must prevent later file reads"
+        content = read(project, relative_path, max_bytes)
+        call.cancel()
+        return content
+
+    monkeypatch.setattr(RawFileContent, "read", cancel_after_read)
+    with ToolCallContext(call).activate(), pytest.raises(ToolCallInterrupted, match="cancelled"):
+        ReadFilesRawTool(agent).apply([{"relative_path": "first"}, {"relative_path": "second"}])
 
 
 @pytest.mark.parametrize(

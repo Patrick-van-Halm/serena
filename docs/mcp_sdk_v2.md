@@ -30,7 +30,7 @@ server is no longer registered.
 - Pass HTTP listen addresses to the transport runner, never the server constructor
   or stdio runner. Project `.env` files do not configure the MCP server.
 - Use `mcp_types` and snake-case Python model fields. JSON serialization still uses
-  protocol aliases; `read_file_raw` returns native image/resource blocks, not text
+  protocol aliases; `read_files_raw` returns native image/resource blocks, not text
   containing their base64 representation.
 - Preserve Serena's existing bounded worker offloading, deadlines, cancellation,
   endpoint authentication, ownership verification, and no-replay behavior.

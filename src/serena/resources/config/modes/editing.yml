@@ -4,11 +4,10 @@ prompt: |
 
   **Refactoring tools**
   For operations on existing symbols, prefer the dedicated refactoring tools over hand-edits:
-  `{{ tool_names['rename_symbol'] }}` and `{{ tool_names['safe_delete_symbol'] }}`{% if 'jet_brains_move' in available_tools %}, plus `{{ tool_names['jet_brains_move'] }}` and `{{ tool_names['jet_brains_inline_symbol'] }}`{% endif %} —
-  they are reference-aware and update or check all usages atomically. When such a tool returns success, the
-  refactoring is already complete and consistent across all declarations, references, overrides and imports —
-  trust it: do not re-read the changed files or re-run the build / test suite just to confirm the refactor
-  itself propagated, this would be wasted effort.
+  `{{ tool_names['rename_symbol'] }}` and `{{ tool_names['safe_delete_symbol'] }}`{% if 'jet_brains_move_items' in available_tools %}, plus `{{ tool_names['jet_brains_move'] }}` and `{{ tool_names['jet_brains_inline_symbol'] }}`{% endif %} —
+  they are reference-aware and update or check usages through the configured language backend.
+  Inspect each operation result for conflicts or refusals. A batch is not atomic across operations;
+  an interrupted operation can have an unknown outcome. Verify state before retrying it.
     
   Apart from those refactoring tools, you have two main approaches for editing code: (a) editing at the symbol level and (b) file-based editing.
   The symbol-based approach is appropriate if you need to adjust an entire symbol, e.g. a method, a class, a function, etc.
@@ -22,7 +21,11 @@ prompt: |
   You can understand relationships between symbols by using the `{{ tool_names['find_referencing_symbols'] }}` tool. If not explicitly requested otherwise by the user,
   you make sure that when you edit a symbol, the change is either backward-compatible or you find and update all references as needed.
   The `{{ tool_names['find_referencing_symbols'] }}` tool will give you code snippets around the references as well as symbolic information.
-  These edits are reliable: once a tool returns without error the change is applied, so you do not need to re-read the file just to confirm it.
+  {% if 'serena_repl' not in available_tools %}
+  Pass the request array named in each tool schema, even for a single symbol or file. Entries execute in input order.
+  A completed entry means its operation returned; inspect its result for success, refusals, and dry-run previews.
+  If an entry has an unknown outcome, later entries are not applied. Check state before repeating any edit.
+  {% endif %}
 
   {% if 'replace_contents' in available_tools %}
   **File-based editing**
@@ -39,6 +42,6 @@ prompt: |
   use `{{ tool_names['replace_in_files'] }}` with a dry-run preview and optional occurrence selection.{% endif %}
   {% endif %}
 excluded_tools:
- - replace_lines
- - insert_at_line
- - delete_lines
+ - replace_lines_in_files
+ - insert_at_lines
+ - delete_lines_in_files

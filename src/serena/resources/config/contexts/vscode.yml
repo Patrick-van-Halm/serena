@@ -12,13 +12,13 @@ prompt: |
   instructions (if not done so already) with the `initial_instructions` tool.
 
 excluded_tools:
-  - create_text_file
-  - delete_path
-  - copy_path
-  - move_path
+  - create_text_files
+  - delete_paths
+  - copy_paths
+  - move_paths
   - read_files
   - execute_shell_command
-  - find_file
+  - find_files
   - list_dirs
 
 tool_description_overrides: {}

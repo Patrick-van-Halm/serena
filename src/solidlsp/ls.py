@@ -68,6 +68,7 @@ def _file_signature(path: Path) -> FileSignature:
     stat_result = path.stat()
     return (stat_result.st_mtime_ns, stat_result.st_size, stat_result.st_ctime_ns)
 
+
 """
 Type alias for the raw symbol information returned by a language server in response to a
 `textDocument/documentSymbol` request.
@@ -248,7 +249,7 @@ class _SymbolBodySource:
 
         Text-mode universal-newline handling normalises CRLF and bare CR to LF,
         matching FileUtils.read_file/TextUtils. A trailing newline creates one final
-        empty logical line, matching the previous contents.split("\\n") representation.
+        empty logical line, matching the previous line-splitting representation.
         """
         if start_line < 0 or end_line < start_line or start_col < 0 or end_col < 0:
             raise InvalidTextLocationError(f"Invalid symbol range for {self.abs_path}")
@@ -262,7 +263,7 @@ class _SymbolBodySource:
             for raw_line in f:
                 line_no = physical_line_count
                 physical_line_count += 1
-                ended_with_newline = raw_line.endswith("\\n")
+                ended_with_newline = raw_line.endswith("\n")
                 line = raw_line[:-1] if ended_with_newline else raw_line
 
                 if start_line <= line_no <= end_line:
@@ -293,23 +294,19 @@ class _SymbolBodySource:
             # Preserve the previous accepted convention where a whole-file range ends
             # at line_count, column 0 (one logical line beyond the final valid index).
             if end_line == logical_line_count and end_col == 0:
+                if start_line == end_line and start_col == 0:
+                    return ""
                 end_line = logical_last_line
                 end_col = len(logical_last_text)
             elif end_line >= logical_line_count:
-                raise InvalidTextLocationError(
-                    f"Symbol range end (line {end_line}, col {end_col}) is out of bounds for {self.abs_path}"
-                )
+                raise InvalidTextLocationError(f"Symbol range end (line {end_line}, col {end_col}) is out of bounds for {self.abs_path}")
 
         if start_line > end_line or not selected:
-            raise InvalidTextLocationError(
-                f"Symbol range start (line {start_line}, col {start_col}) is out of bounds for {self.abs_path}"
-            )
+            raise InvalidTextLocationError(f"Symbol range start (line {start_line}, col {start_col}) is out of bounds for {self.abs_path}")
 
         end_idx = end_line - start_line
         if end_idx >= len(selected):
-            raise InvalidTextLocationError(
-                f"Symbol range end (line {end_line}, col {end_col}) is out of bounds for {self.abs_path}"
-            )
+            raise InvalidTextLocationError(f"Symbol range end (line {end_line}, col {end_col}) is out of bounds for {self.abs_path}")
 
         selected = selected[: end_idx + 1]
         if len(selected) == 1:
@@ -317,7 +314,8 @@ class _SymbolBodySource:
 
         selected[0] = selected[0][start_col:]
         selected[-1] = selected[-1][:end_col]
-        return "\\n".join(selected)
+        return "\n".join(selected)
+
 
 class SymbolBody(ToStringMixin):
     """
@@ -328,7 +326,7 @@ class SymbolBody(ToStringMixin):
     range object. Source text is read only on demand and is not retained afterward.
     """
 
-    __slots__ = ("_source", "_range")
+    __slots__ = ("_range", "_source")
 
     def __init__(self, source: _SymbolBodySource, range_info: ls_types.Range) -> None:
         self._source = source
@@ -593,9 +591,7 @@ class SolidLanguageServer(ABC):
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         # * raw document symbols cache
         self._ls_specific_raw_document_symbols_cache_version = cache_version_raw_document_symbols
-        self._raw_document_symbols_cache: dict[
-            str, tuple[FileSignature, str, list[DocumentSymbol] | list[SymbolInformation] | None]
-        ] = {}
+        self._raw_document_symbols_cache: dict[str, tuple[FileSignature, str, list[DocumentSymbol] | list[SymbolInformation] | None]] = {}
         """maps paths to (file_signature, file_content_hash, raw_root_symbols)"""
         self._raw_document_symbols_cache_is_modified: bool = False
         self._raw_document_symbols_cache_loaded = False
@@ -2660,8 +2656,7 @@ class SolidLanguageServer(ABC):
 
                 symbol_range = location["range"]
                 is_multiline_container = (
-                    SymbolKind.is_container(symbol["kind"])
-                    and symbol_range["start"]["line"] != symbol_range["end"]["line"]
+                    SymbolKind.is_container(symbol["kind"]) and symbol_range["start"]["line"] != symbol_range["end"]["line"]
                 )
                 is_variable_or_constant = symbol["kind"] in {ls_types.SymbolKind.Variable, ls_types.SymbolKind.Constant}
                 if not (is_multiline_container or is_variable_or_constant):

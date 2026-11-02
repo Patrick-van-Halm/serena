@@ -27,8 +27,8 @@ jobs:
       - run: uv sync --locked --extra dev
       - name: Formatting and lint
         run: |
-          uv run ruff check src/serena/agent_workflow src/serena/tools/batch_*_tools.py test/serena/test_agent_workflow*.py
-          uv run ruff format --diff src/serena/agent_workflow src/serena/tools/batch_*_tools.py test/serena/test_agent_workflow*.py
+          uv run ruff check src/serena/agent_workflow src/serena/tools/batch.py src/serena/tools/batch_*_tools.py test/serena/test_agent_workflow*.py test/serena/test_tool_batches.py
+          uv run ruff format --diff src/serena/agent_workflow src/serena/tools/batch.py src/serena/tools/batch_*_tools.py test/serena/test_agent_workflow*.py test/serena/test_tool_batches.py
       - name: Type checking
         if: ${{ !cancelled() }}
         run: uv run poe type-check
@@ -37,7 +37,7 @@ jobs:
         run: uv run pytest -q test/serena/test_request_latency.py test/serena/test_mcp_sdk_v2.py test/serena/test_mcp.py test/serena/test_mcp_bridge.py test/serena/test_bridge_recovery.py test/serena/test_raw_file_transport.py test/serena/test_read_file_raw.py test/serena/test_shared_daemon_startup.py test/serena/test_shared_daemon_wsl.py test/serena/test_project_server_port_integration.py test/serena/test_project_server_endpoint.py test/serena/test_daemon_recovery.py test/serena/test_project_server_recovery.py test/serena/test_restart_cli.py --timeout=90 --tb=short --junitxml=mcp-regressions.xml
       - name: Agent workflow regressions
         if: ${{ !cancelled() }}
-        run: uv run pytest -q test/serena/test_agent_workflow*.py --timeout=90 --tb=short --junitxml=batch-regressions.xml
+        run: uv run pytest -q test/serena/test_agent_workflow*.py test/serena/test_tool_batches.py test/serena/test_projectless_tools.py test/serena/test_cli_projectless_startup.py test/solidlsp/test_symbol_body.py --timeout=90 --tb=short --junitxml=batch-regressions.xml
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:

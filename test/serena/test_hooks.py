@@ -898,9 +898,19 @@ class TestPreToolUseAutoApproveSerenaHook:
         output = capsys.readouterr().out.strip()
         assert json.loads(output)["hookSpecificOutput"]["permissionDecision"] == "allow"
 
-    def test_stays_silent_for_non_serena_tool(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-        """Non-Serena tools get no decision even in ``acceptEdits`` mode (the hook stays silent)."""
-        stdin_data = self._approve_input(tool_name="Grep")
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "Grep",
+            "mcp__serena__write_memories",
+            "mcp__serena__edit_memories",
+            "mcp__serena__delete_memories",
+            "mcp__serena__rename_memories",
+        ],
+    )
+    def test_stays_silent_for_non_symbolic_tools(self, tmp_path: Path, capsys: pytest.CaptureFixture[str], tool_name: str):
+        """Bulk memory edits retain the client's approval decision even in ``acceptEdits`` mode."""
+        stdin_data = self._approve_input(tool_name=tool_name)
         with patch("sys.stdin", _make_stdin(stdin_data)), patch("serena.hooks.serena_home_dir", str(tmp_path)):
             PreToolUseAutoApproveSerenaHook(HookClient.CLAUDE_CODE).execute()
         assert capsys.readouterr().out == ""
@@ -1026,13 +1036,14 @@ class TestPostToolUseResetSymbolicToolCounterHook:
 
         assert self._persisted_counter(tmp_path, session_id).n_recent_grep_uses == 2
 
-    def test_does_not_reset_for_non_symbolic_serena_tool(self, tmp_path: Path):
-        """``read_file``-like Serena tools are excluded, same as the PreToolUse classification."""
+    @pytest.mark.parametrize("tool_name", ["read_files", "write_memories", "edit_memories", "delete_memories", "rename_memories"])
+    def test_does_not_reset_for_non_symbolic_serena_tool(self, tmp_path: Path, tool_name: str):
+        """File reads and memory edits do not count as symbolic code exploration."""
         session_id = "reset-non-symbolic"
         seeded = ToolUseCounter(n_recent_grep_uses=2)
         self._seed_counter(tmp_path, session_id, seeded)
 
-        payload = _post_tool_use_input("mcp__serena__read_file", session_id=session_id, tool_response={"isError": False})
+        payload = _post_tool_use_input(f"mcp__serena__{tool_name}", session_id=session_id, tool_response={"isError": False})
         with patch("sys.stdin", _make_stdin(payload)), patch("serena.hooks.serena_home_dir", str(tmp_path)):
             PostToolUseResetSymbolicToolCounterHook(HookClient.CODEX).execute()
 

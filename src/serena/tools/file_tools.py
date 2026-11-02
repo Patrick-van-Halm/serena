@@ -10,6 +10,7 @@ File and file system-related tools, specifically for
 from typing import TYPE_CHECKING, Literal, cast
 
 from serena.tools import EditingToolWithDiagnostics, Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActiveProject, ToolMarkerOptional
+from serena.tools.batch import ToolBatch
 
 if TYPE_CHECKING:
     from serena.repl.api.edit_api import EditApi
@@ -47,6 +48,8 @@ class CreateTextFileTool(EditingToolWithDiagnostics, FsApiMixin):
     Creates/overwrites a file in the project or startup working directory, or outside it when full_access_mode is enabled.
     """
 
+    batch = ToolBatch("create_text_files", "files")
+
     def apply(self, relative_path: str, content: str) -> str:
         """
         Write a new file or overwrite an existing file with the given content.
@@ -63,6 +66,8 @@ class FindFileTool(Tool, FsApiMixin):
     """
     Finds files in the given relative paths
     """
+
+    batch = ToolBatch("find_files", "queries")
 
     def apply(self, file_mask: str, relative_path: str) -> str:
         """
@@ -81,6 +86,8 @@ class DeletePathTool(Tool, ToolMarkerCanEdit, FsApiMixin):
     Deletes a file, symlink, or directory. Outside-project paths require full_access_mode.
     """
 
+    batch = ToolBatch("delete_paths", "paths")
+
     def apply(self, relative_path: str, recursive: bool = False) -> str:
         """
         Delete a filesystem path.
@@ -96,6 +103,8 @@ class CopyPathTool(Tool, ToolMarkerCanEdit, FsApiMixin):
     """
     Copies a file, symlink, or directory. Outside-project paths require full_access_mode.
     """
+
+    batch = ToolBatch("copy_paths", "copies")
 
     def apply(self, source_path: str, destination_path: str, overwrite: bool = False) -> str:
         """
@@ -113,6 +122,8 @@ class MovePathTool(Tool, ToolMarkerCanEdit, FsApiMixin):
     """
     Moves or renames a file, symlink, or directory. Outside-project paths require full_access_mode.
     """
+
+    batch = ToolBatch("move_paths", "moves")
 
     def apply(self, source_path: str, destination_path: str, overwrite: bool = False) -> str:
         """
@@ -208,6 +219,8 @@ class DeleteLinesTool(EditingToolWithDiagnostics, ToolMarkerDoesNotRequireActive
     Deletes a range of lines within a file.
     """
 
+    batch = ToolBatch("delete_lines_in_files", "edits")
+
     def apply(
         self,
         relative_path: str,
@@ -231,6 +244,8 @@ class ReplaceLinesTool(EditingToolWithDiagnostics, ToolMarkerDoesNotRequireActiv
     """
     Replaces a range of lines within a file with new content.
     """
+
+    batch = ToolBatch("replace_lines_in_files", "edits")
 
     def apply(
         self,
@@ -258,6 +273,8 @@ class InsertAtLineTool(EditingToolWithDiagnostics, ToolMarkerDoesNotRequireActiv
     Inserts content at a given line in a file.
     """
 
+    batch = ToolBatch("insert_at_lines", "insertions")
+
     def apply(
         self,
         relative_path: str,
@@ -266,7 +283,7 @@ class InsertAtLineTool(EditingToolWithDiagnostics, ToolMarkerDoesNotRequireActiv
     ) -> str:
         """
         Inserts the given content at the given line in the file, pushing existing content of the line down.
-        In general, symbolic insert operations like insert_after_symbol or insert_before_symbol should be preferred if you know which
+        In general, symbolic insert operations like insert_after_symbols or insert_before_symbols should be preferred if you know which
         symbol you are looking for.
         However, this can also be useful for small targeted edits of the body of a longer symbol (without replacing the entire body).
 
@@ -279,6 +296,8 @@ class InsertAtLineTool(EditingToolWithDiagnostics, ToolMarkerDoesNotRequireActiv
 
 
 class SearchForPatternTool(Tool, FsApiMixin):
+    batch = ToolBatch("search_for_patterns", "queries")
+
     def apply(
         self,
         substring_pattern: str,

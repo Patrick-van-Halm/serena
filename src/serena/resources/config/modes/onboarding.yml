@@ -6,11 +6,11 @@ prompt: |
   In this mode, you should not be modifying any existing files.
   If you are also in interactive mode and something about the project is unclear, ask the user for clarification.
 excluded_tools:
-  - create_text_file
-  - replace_symbol_body
-  - insert_after_symbol
-  - insert_before_symbol
-  - delete_lines
-  - replace_lines
-  - insert_at_line
+  - create_text_files
+  - replace_symbol_bodies
+  - insert_after_symbols
+  - insert_before_symbols
+  - delete_lines_in_files
+  - replace_lines_in_files
+  - insert_at_lines
   - execute_shell_command

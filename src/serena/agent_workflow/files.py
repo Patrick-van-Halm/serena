@@ -85,7 +85,7 @@ class FileBatchReader:
         text = raw.data.decode(self._project.project_config.encoding)
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         if "\x00" in text:
-            raise ValueError("File contains NUL characters; use read_file_raw for binary content")
+            raise ValueError("File contains NUL characters; use read_files_raw for binary content")
 
         # match read_file's line semantics, including empty files and trailing empty lines
         lines = TextUtils.split_lines(text)

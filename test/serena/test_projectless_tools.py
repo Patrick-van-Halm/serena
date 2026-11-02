@@ -4,9 +4,11 @@
 
 import base64
 import json
+import re
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from mcp_types import CallToolResult, EmbeddedResource
@@ -18,6 +20,25 @@ from serena.memories.memory_manager import MemoryManager
 from serena.repl.api.edit_api import EditApi
 from serena.repl.api.fs_api import FsApi
 from serena.tools import ToolCallError
+
+
+def _batch_item(agent: SerenaAgent, name: str, parameter: str, item: dict[str, Any]) -> dict[str, Any]:
+    """Execute one public batch request and retain its operation outcome."""
+    result = agent.get_tool_by_name(name).apply_ex(**{parameter: [item]}, catch_exceptions=False)
+    assert isinstance(result, str)
+    rows = json.loads(result)["results"]
+    assert len(rows) == 1
+    return rows[0]
+
+
+def _completed_batch_result(agent: SerenaAgent, name: str, parameter: str, item: dict[str, Any]) -> str:
+    """Return a completed per-item response for the scenario's content/side-effect assertions."""
+    row = _batch_item(agent, name, parameter, item)
+    assert row["status"] == "completed", row
+    assert row["error"] is None
+    assert not row["truncated"]
+    assert isinstance(row["result"], str)
+    return row["result"]
 
 
 @pytest.fixture
@@ -53,8 +74,8 @@ def test_edit_notes_and_run_commands_without_creating_a_project(
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
-    agent.get_tool_by_name("create_text_file").apply_ex(
-        relative_path="notes/readme.txt", content="draft note\nsecond line\n", catch_exceptions=False
+    _completed_batch_result(
+        agent, "create_text_files", "files", {"relative_path": "notes/readme.txt", "content": "draft note\nsecond line\n"}
     )
     replaced = json.loads(
         agent.get_tool_by_name("replace_contents").apply_ex(
@@ -78,9 +99,9 @@ def test_edit_notes_and_run_commands_without_creating_a_project(
     EditApi(agent).replace_lines("notes/readme.txt", 1, 1, "edited line")
 
     # discover the edited file through ordinary filesystem tools
-    found = json.loads(agent.get_tool_by_name("find_file").apply_ex(file_mask="*.txt", relative_path="notes", catch_exceptions=False))
+    found = json.loads(_completed_batch_result(agent, "find_files", "queries", {"file_mask": "*.txt", "relative_path": "notes"}))
     assert [Path(path).as_posix() for path in found["files"]] == ["notes/readme.txt"]
-    matches = json.loads(agent.get_tool_by_name("search_for_pattern").apply_ex(substring_pattern="ready note", catch_exceptions=False))
+    matches = json.loads(_completed_batch_result(agent, "search_for_patterns", "queries", {"substring_pattern": "ready note"}))
     assert [Path(path).as_posix() for path in matches] == ["notes/readme.txt"]
 
     # batch tools and original-byte reads use the same workspace
@@ -88,7 +109,7 @@ def test_edit_notes_and_run_commands_without_creating_a_project(
     assert read["results"][0]["content"] == "ready note\nedited line\n"
     directories = json.loads(agent.get_tool_by_name("list_dirs").apply_ex(directories=[{"relative_path": "notes"}], catch_exceptions=False))
     assert [Path(path).as_posix() for path in directories["results"][0]["files"]] == ["notes/readme.txt"]
-    raw = agent.get_tool_by_name("read_file_raw").apply_ex(relative_path="notes/readme.txt", catch_exceptions=False)
+    raw = agent.get_tool_by_name("read_files_raw").apply_ex(files=[{"relative_path": "notes/readme.txt"}], catch_exceptions=False)
     assert isinstance(raw, CallToolResult)
     assert isinstance(raw.content[1], EmbeddedResource)
     assert base64.b64decode(raw.content[1].resource.blob) == (root / "notes/readme.txt").read_bytes()
@@ -116,18 +137,17 @@ def test_projectless_editing_preserves_access_and_ignore_rules(agent: SerenaAgen
     )["results"][0]
     assert "outside the project root" in denied_read["error"]
     assert denied_read["content"] == ""
-    for name, arguments in [
-        ("create_text_file", {"relative_path": "../outside.txt", "content": "denied"}),
-        (
-            "replace_contents",
-            {"replacements": [{"relative_path": "../outside.txt", "needle": "original", "repl": "denied", "mode": "literal"}]},
-        ),
-    ]:
-        with pytest.raises(ToolCallError, match="outside the project root"):
-            agent.get_tool_by_name(name).apply_ex(**arguments, catch_exceptions=False)
+    denied_write = _batch_item(agent, "create_text_files", "files", {"relative_path": "../outside.txt", "content": "denied"})
+    assert denied_write["status"] == "unknown"
+    assert "outside the project root" in denied_write["error"]
+    with pytest.raises(ToolCallError, match="outside the project root"):
+        agent.get_tool_by_name("replace_contents").apply_ex(
+            replacements=[{"relative_path": "../outside.txt", "needle": "original", "repl": "denied", "mode": "literal"}],
+            catch_exceptions=False,
+        )
     assert outside.read_text(encoding="utf-8") == "original"
     agent.serena_config.full_access_mode = True
-    agent.get_tool_by_name("create_text_file").apply_ex(relative_path=str(outside), content="allowed", catch_exceptions=False)
+    _completed_batch_result(agent, "create_text_files", "files", {"relative_path": str(outside), "content": "allowed"})
     allowed_read = json.loads(
         agent.get_tool_by_name("read_files").apply_ex(files=[{"relative_path": str(outside)}], catch_exceptions=False)
     )["results"][0]
@@ -136,7 +156,7 @@ def test_projectless_editing_preserves_access_and_ignore_rules(agent: SerenaAgen
     # searches and filtered listings honor global ignores without a project config
     (root / "visible.txt").write_text("needle", encoding="utf-8")
     (root / "ignored.txt").write_text("needle", encoding="utf-8")
-    matches = json.loads(agent.get_tool_by_name("search_for_pattern").apply_ex(substring_pattern="needle", catch_exceptions=False))
+    matches = json.loads(_completed_batch_result(agent, "search_for_patterns", "queries", {"substring_pattern": "needle"}))
     assert set(matches) == {"visible.txt"}
     listing = json.loads(
         agent.get_tool_by_name("list_dirs").apply_ex(
@@ -153,13 +173,18 @@ def test_language_specific_operations_still_require_a_project(agent: SerenaAgent
     read = json.loads(agent.get_tool_by_name("read_files").apply_ex(files=[{"relative_path": "module.py"}], catch_exceptions=False))
     assert "def greet" in read["results"][0]["content"]
     for name, arguments in [
-        ("find_symbol", {"name_path_pattern": "greet"}),
-        ("get_symbols_overview", {"relative_path": "module.py"}),
-        ("replace_symbol_body", {"relative_path": "module.py", "name_path": "greet", "body": "def greet(): pass"}),
-        ("search_for_pattern", {"substring_pattern": "greet", "restrict_search_to_code_files": True}),
+        ("find_symbols", {"queries": [{"name_path_pattern": "greet"}]}),
+        ("get_symbols_overviews", {"files": [{"relative_path": "module.py"}]}),
+        ("replace_symbol_bodies", {"replacements": [{"relative_path": "module.py", "name_path": "greet", "body": "def greet(): pass"}]}),
     ]:
         with pytest.raises(ToolCallError, match="No active project"):
             agent.get_tool_by_name(name).apply_ex(**arguments, catch_exceptions=False)
+
+    restricted_search = _batch_item(
+        agent, "search_for_patterns", "queries", {"substring_pattern": "greet", "restrict_search_to_code_files": True}
+    )
+    assert restricted_search["status"] == "error"
+    assert "No active project" in restricted_search["error"]
 
     # direct facade calls retain the same boundary when bypassing classic tools
     with pytest.raises(ValueError, match="No active project"):
@@ -185,7 +210,7 @@ def test_projectless_repl_can_read_and_edit_text(agent: SerenaAgent, tmp_path: P
 
 def test_activation_switches_file_root_and_applies_project_permissions(agent: SerenaAgent, tmp_path: Path) -> None:
     # start with a writable unconfigured directory
-    agent.get_tool_by_name("create_text_file").apply_ex(relative_path="note.txt", content="workspace", catch_exceptions=False)
+    _completed_batch_result(agent, "create_text_files", "files", {"relative_path": "note.txt", "content": "workspace"})
     root = tmp_path / "configured"
     (root / ".serena").mkdir(parents=True)
     (root / ".serena/project.yml").write_text("project_name: configured\nlanguage_servers: [python]\nread_only: true\n", encoding="utf-8")
@@ -198,13 +223,15 @@ def test_activation_switches_file_root_and_applies_project_permissions(agent: Se
     read = json.loads(agent.get_tool_by_name("read_files").apply_ex(files=[{"relative_path": "note.txt"}], catch_exceptions=False))
     assert read["results"][0]["content"] == "configured project"
     matches = json.loads(
-        agent.get_tool_by_name("search_for_pattern").apply_ex(
-            substring_pattern="greet", restrict_search_to_code_files=True, catch_exceptions=False
+        _completed_batch_result(
+            agent, "search_for_patterns", "queries", {"substring_pattern": "greet", "restrict_search_to_code_files": True}
         )
     )
     assert set(matches) == {"module.py"}
     with pytest.raises(ToolCallError, match="is not active"):
-        agent.get_tool_by_name("create_text_file").apply_ex(relative_path="note.txt", content="denied", catch_exceptions=False)
+        agent.get_tool_by_name("create_text_files").apply_ex(
+            files=[{"relative_path": "note.txt", "content": "denied"}], catch_exceptions=False
+        )
     assert (root / "note.txt").read_text(encoding="utf-8") == "configured project"
     assert (tmp_path / "workspace/note.txt").read_text(encoding="utf-8") == "workspace"
 
@@ -225,8 +252,18 @@ def test_global_memory_lifecycle_without_a_project(agent: SerenaAgent, global_me
             result = agent.get_tool_by_name("serena_repl").apply_ex(
                 session="global-notes", code=f"s.mem.{name}({arguments})", catch_exceptions=False
             )
-        else:
+        elif name == "list_memories":
             result = agent.get_tool_by_name(name).apply_ex(**kwargs, catch_exceptions=False)
+        else:
+            bulk_names = {
+                "write_memory": ("write_memories", "memories"),
+                "read_memory": ("read_memories", "memories"),
+                "edit_memory": ("edit_memories", "memories"),
+                "rename_memory": ("rename_memories", "renames"),
+                "delete_memory": ("delete_memories", "memories"),
+            }
+            bulk_name, parameter = bulk_names[name]
+            result = _completed_batch_result(agent, bulk_name, parameter, kwargs)
         assert isinstance(result, str)
         return result
 
@@ -248,11 +285,14 @@ def test_global_memory_lifecycle_without_a_project(agent: SerenaAgent, global_me
 
 def test_projectless_memories_preserve_scope_and_access_rules(agent: SerenaAgent, global_memories: Path) -> None:
     # global-only access cannot silently create or move a memory into local scope
-    agent.get_tool_by_name("write_memory").apply_ex(memory_name="global/target", content="shared", catch_exceptions=False)
-    with pytest.raises(ToolCallError, match="No active project.*global/"):
-        agent.get_tool_by_name("write_memory").apply_ex(memory_name="local", content="denied", catch_exceptions=False)
-    with pytest.raises(ToolCallError, match="No active project.*global/"):
-        agent.get_tool_by_name("rename_memory").apply_ex(old_name="global/target", new_name="local", catch_exceptions=False)
+    _completed_batch_result(agent, "write_memories", "memories", {"memory_name": "global/target", "content": "shared"})
+    for name, parameter, item in [
+        ("write_memories", "memories", {"memory_name": "local", "content": "denied"}),
+        ("rename_memories", "renames", {"old_name": "global/target", "new_name": "local"}),
+    ]:
+        denied = _batch_item(agent, name, parameter, item)
+        assert denied["status"] == "unknown"
+        assert re.search("No active project.*global/", denied["error"])
     assert (global_memories / "target.md").read_text(encoding="utf-8") == "shared"
 
     # preserve read-only and ignored global memories, including rename sources
@@ -268,24 +308,25 @@ def test_projectless_memories_preserve_scope_and_access_rules(agent: SerenaAgent
     listed = json.loads(agent.get_tool_by_name("list_memories").apply_ex(catch_exceptions=False))
     assert listed == {"memories": ["global/target"], "read_only_memories": ["global/locked"]}
     for name, arguments, error in [
-        ("write_memory", {"memory_name": "global/locked", "content": "denied"}, "read_only"),
-        ("write_memory", {"memory_name": "global/locked.md.md", "content": "denied"}, "read_only"),
-        ("write_memory", {"memory_name": "global/./locked", "content": "denied"}, "segments"),
-        ("edit_memory", {"memory_name": "global/locked", "needle": "See", "repl": "denied", "mode": "literal"}, "read_only"),
-        ("delete_memory", {"memory_name": "global/locked"}, "read_only"),
-        ("rename_memory", {"old_name": "global/locked", "new_name": "global/moved"}, "read_only"),
-        ("read_memory", {"memory_name": "global/ignored"}, "ignored_memory_patterns"),
-        ("read_memory", {"memory_name": "global/ignored.md.md"}, "ignored_memory_patterns"),
-        ("read_memory", {"memory_name": "mem:mem:global/ignored"}, "ignored_memory_patterns"),
-        ("write_memory", {"memory_name": "global/ignored", "content": "denied"}, "ignored_memory_patterns"),
-        ("rename_memory", {"old_name": "global/ignored", "new_name": "global/moved"}, "ignored_memory_patterns"),
+        ("write_memories", {"memory_name": "global/locked", "content": "denied"}, "read_only"),
+        ("write_memories", {"memory_name": "global/locked.md.md", "content": "denied"}, "read_only"),
+        ("write_memories", {"memory_name": "global/./locked", "content": "denied"}, "segments"),
+        ("edit_memories", {"memory_name": "global/locked", "needle": "See", "repl": "denied", "mode": "literal"}, "read_only"),
+        ("delete_memories", {"memory_name": "global/locked"}, "read_only"),
+        ("rename_memories", {"old_name": "global/locked", "new_name": "global/moved"}, "read_only"),
+        ("read_memories", {"memory_name": "global/ignored"}, "ignored_memory_patterns"),
+        ("read_memories", {"memory_name": "global/ignored.md.md"}, "ignored_memory_patterns"),
+        ("read_memories", {"memory_name": "mem:mem:global/ignored"}, "ignored_memory_patterns"),
+        ("write_memories", {"memory_name": "global/ignored", "content": "denied"}, "ignored_memory_patterns"),
+        ("rename_memories", {"old_name": "global/ignored", "new_name": "global/moved"}, "ignored_memory_patterns"),
     ]:
-        with pytest.raises(ToolCallError, match=error):
-            agent.get_tool_by_name(name).apply_ex(**arguments, catch_exceptions=False)
+        denied = _batch_item(agent, name, "renames" if name == "rename_memories" else "memories", arguments)
+        assert denied["status"] == ("error" if name == "read_memories" else "unknown")
+        assert error in denied["error"]
     assert (global_memories / "ignored.md").read_text(encoding="utf-8") == "private"
 
     # renaming a writable memory succeeds without rewriting protected references
-    agent.get_tool_by_name("rename_memory").apply_ex(old_name="global/target", new_name="global/renamed", catch_exceptions=False)
+    _completed_batch_result(agent, "rename_memories", "renames", {"old_name": "global/target", "new_name": "global/renamed"})
     assert (global_memories / "renamed.md").read_text(encoding="utf-8") == "shared"
 
     assert (global_memories / "locked.md").read_text(encoding="utf-8") == "See `mem:global/target`."

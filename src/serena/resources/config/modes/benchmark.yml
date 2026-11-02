@@ -12,11 +12,11 @@ prompt: |
 
   The task is provided up front; begin work immediately and see it through to completion without pausing for user input.
 excluded_tools:
-  - write_memory
-  - read_memory
-  - edit_memory
-  - delete_memory
-  - rename_memory
+  - write_memories
+  - read_memories
+  - edit_memories
+  - delete_memories
+  - rename_memories
   - onboarding
 excluded_apis:
   - mem

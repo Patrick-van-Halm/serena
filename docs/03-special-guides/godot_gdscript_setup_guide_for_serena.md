@@ -55,7 +55,7 @@ No additional configuration is needed for version detection.
 ---
 ## Performance Note
 
-Godot's built-in LSP does not implement the `workspace/symbol` request (global symbol search across the whole project). As a result, when Serena performs a workspace-wide symbol search — for example, calling `find_symbol` without a `relative_path` — it must fall back to sending a `textDocument/documentSymbol` request for **every `.gd` file** in the project individually.
+Godot's built-in LSP does not implement the `workspace/symbol` request (global symbol search across the whole project). As a result, when Serena performs a workspace-wide symbol search — for example, a `find_symbols` query without a `relative_path` — it must fall back to sending a `textDocument/documentSymbol` request for **every `.gd` file** in the project individually.
 
 For large projects, this initial full-project scan can take **30–60 seconds or more**.
 
@@ -71,7 +71,7 @@ To mitigate this:
 |---|---|
 | No `workspace/symbol` support | Godot's LSP does not implement this request. All symbol lookups fall back to per-file `documentSymbol` requests, making the first full-project scan slow. |
 | Editor must stay open | Serena requires the Godot editor to be running throughout the session. Closing the editor breaks the TCP connection; restart Serena after reopening the editor. |
-| Slower workspace operations | `find_symbol` and `find_references` across the whole workspace are slower than for languages whose LSP servers support native workspace-wide queries. |
+| Slower workspace operations | `find_symbols` and `find_referencing_symbols` across the whole workspace are slower than for languages whose LSP servers support native workspace-wide queries. |
 
 ---
 ## Advanced Configuration

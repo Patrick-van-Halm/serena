@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import base64
+import json
 import threading
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,8 @@ from unittest.mock import MagicMock
 import anyio
 import pytest
 from flask import Flask
-from mcp_types import CallToolResult, ImageContent
+from mcp.server.mcpserver.exceptions import ToolError
+from mcp_types import CallToolResult, ImageContent, TextContent
 from werkzeug.serving import make_server
 
 from serena.config.serena_config import LanguageBackend, SerenaConfig
@@ -20,7 +22,8 @@ from serena.project_server import ProjectServer, ProjectServerClient
 from serena.shared_mcp_client import SharedMCPDaemonClient
 from serena.task_executor import TaskExecutor
 from serena.tools import QueryProjectTool, ToolRegistry
-from serena.tools.raw_file_tools import ReadFileRawTool
+from serena.tools.raw_file_tools import ReadFilesRawTool
+from serena.util.raw_file import RawFileContent
 from serena.util.tool_result import ToolResultCodec
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aMXsAAAAASUVORK5CYII=")
@@ -46,23 +49,31 @@ def raw_agent(tmp_path: Path) -> Any:
 
 
 def test_raw_tool_is_available_by_default() -> None:
-    assert ToolRegistry().get_tool_class_by_name("read_file_raw") is ReadFileRawTool
-    assert "read_file_raw" in ToolRegistry().get_tool_names_default_enabled()
+    assert ToolRegistry().get_tool_class_by_name("read_files_raw") is ReadFilesRawTool
+    assert "read_files_raw" in ToolRegistry().get_tool_names_default_enabled()
 
 
 @pytest.mark.parametrize("wrapper", [SerenaFastMCPTool, BridgeFastMCPTool])
 @pytest.mark.parametrize("structured", [None, False, True])
 def test_mcp_wrappers_return_native_image_content(raw_agent: Any, wrapper: Any, structured: bool | None) -> None:
-    tool = ReadFileRawTool(raw_agent)
+    tool = ReadFilesRawTool(raw_agent)
     wrapped = wrapper(tool, openai_tool_compatible=True, structured_output=structured)
 
     async def run() -> CallToolResult:
-        return await wrapped.run({"relative_path": "image.png"}, convert_result=True)
+        return await wrapped.run(
+            {"files": [{"relative_path": "image.png"}, {"relative_path": "missing.png"}, {"relative_path": "image.png"}]},
+            convert_result=True,
+        )
 
     result = anyio.run(run)
     assert isinstance(result, CallToolResult)
     assert isinstance(result.content[1], ImageContent)
     assert base64.b64decode(result.content[1].data) == PNG
+    rows = [json.loads(block.text) for block in result.content if isinstance(block, TextContent)]
+    assert [row["status"] for row in rows] == ["completed", "error", "completed"]
+    assert "FileNotFoundError" in rows[1]["error"]
+    assert isinstance(result.content[4], ImageContent)
+    assert base64.b64decode(result.content[4].data) == PNG
     assert wrapped.annotations is not None
     assert wrapped.annotations.read_only_hint is True
     assert wrapped.annotations.destructive_hint is False
@@ -76,13 +87,13 @@ def test_bridge_proxy_retains_raw_tool_result_schema(raw_agent: Any) -> None:
     bridge.context = MagicMock(name="codex")
     bridge.session_id = "raw-session"
     bridge.client = MagicMock()
-    bridge.client.call_tool.return_value = ReadFileRawTool(raw_agent).apply("image.png")
-    proxy_type = bridge._proxy_tool_class(ReadFileRawTool)
+    bridge.client.call_tool.return_value = ReadFilesRawTool(raw_agent).apply([{"relative_path": "image.png"}])
+    proxy_type = bridge._proxy_tool_class(ReadFilesRawTool)
     proxy = proxy_type(raw_agent)
     wrapped = BridgeFastMCPTool(proxy, openai_tool_compatible=True, structured_output=True)
 
     async def run() -> CallToolResult:
-        return await wrapped.run({"relative_path": "image.png"}, convert_result=True)
+        return await wrapped.run({"files": [{"relative_path": "image.png"}]}, convert_result=True)
 
     result = anyio.run(run)
     assert isinstance(result.content[1], ImageContent)
@@ -90,15 +101,31 @@ def test_bridge_proxy_retains_raw_tool_result_schema(raw_agent: Any) -> None:
     assert wrapped.fn_metadata.output_schema is None
 
 
-def test_missing_file_is_a_tool_error(raw_agent: Any) -> None:
-    from mcp.server.mcpserver.exceptions import ToolError
+def test_missing_file_is_a_per_item_outcome(raw_agent: Any) -> None:
+    wrapped = SerenaFastMCPTool(ReadFilesRawTool(raw_agent), openai_tool_compatible=True, structured_output=None)
 
-    wrapped = SerenaFastMCPTool(ReadFileRawTool(raw_agent), openai_tool_compatible=True, structured_output=None)
+    async def run() -> CallToolResult:
+        return await wrapped.run({"files": [{"relative_path": "missing.png"}]}, convert_result=True)
+
+    result = anyio.run(run)
+    assert not result.is_error and len(result.content) == 1
+    assert isinstance(result.content[0], TextContent)
+    row = json.loads(result.content[0].text)
+    assert row["status"] == "error" and "FileNotFoundError" in row["error"]
+
+
+@pytest.mark.parametrize("wrapper", [SerenaFastMCPTool, BridgeFastMCPTool])
+def test_misspelled_raw_byte_budget_rejects_call_before_reading(raw_agent: Any, wrapper: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected_read(*args, **kwargs):
+        pytest.fail("A misspelled byte budget must not silently select the larger default")
+
+    monkeypatch.setattr(RawFileContent, "read", unexpected_read)
+    wrapped = wrapper(ReadFilesRawTool(raw_agent), openai_tool_compatible=True, structured_output=True)
 
     async def run() -> None:
-        await wrapped.run({"relative_path": "missing.png"}, convert_result=True)
+        await wrapped.run({"files": [{"relative_path": "image.png"}], "max_total_byte": 1}, convert_result=True)
 
-    with pytest.raises(ToolError, match="FileNotFoundError"):
+    with pytest.raises(ToolError, match="max_total_byte"):
         anyio.run(run)
 
 
@@ -108,7 +135,8 @@ def test_http_clients_preserve_multimodal_results(raw_agent: Any, route: str, mo
     server = ProjectServer.__new__(ProjectServer)
     server._agent = raw_agent
     server._app = Flask(__name__)
-    native = ReadFileRawTool(raw_agent).apply("image.png")
+    files = [{"relative_path": "image.png"}, {"relative_path": "missing.png"}, {"relative_path": "image.png"}]
+    native = ReadFilesRawTool(raw_agent).apply(files)
     monkeypatch.setattr(server, "_call_mcp_tool", lambda req: native)
     monkeypatch.setattr(server, "_query_project", lambda req: native)
     server._setup_routes()
@@ -118,17 +146,18 @@ def test_http_clients_preserve_multimodal_results(raw_agent: Any, route: str, mo
     try:
         if route == "bridge":
             client = SharedMCPDaemonClient(raw_agent.serena_config, port=http.server_port)
-            result = client.call_tool("/project", "codex", "session", "read_file_raw", {"relative_path": "image.png"})
+            result = client.call_tool("/project", "codex", "session", "read_files_raw", {"files": files})
         else:
             legacy_client = ProjectServerClient(raw_agent.serena_config, port=http.server_port)
             if route == "query":
-                result = legacy_client.query_project("/project", "read_file_raw", '{"relative_path":"image.png"}')
+                result = legacy_client.query_project("/project", "read_files_raw", json.dumps({"files": files}))
             else:
-                result = legacy_client.call_mcp_tool("/project", "codex", "session", "read_file_raw", {"relative_path": "image.png"})
+                result = legacy_client.call_mcp_tool("/project", "codex", "session", "read_files_raw", {"files": files})
         assert isinstance(result, CallToolResult)
         assert isinstance(result.content[1], ImageContent)
         assert base64.b64decode(result.content[1].data) == PNG
         assert ToolResultCodec.summary(result) == ToolResultCodec.summary(native)
+        assert result.model_dump() == native.model_dump()
     finally:
         http.shutdown()
         thread.join(timeout=5)
@@ -141,7 +170,7 @@ def test_cross_project_forwarding_preserves_text_and_native_content(raw_agent: A
     from contextlib import nullcontext
 
     project = raw_agent.get_active_project()
-    native = ReadFileRawTool(raw_agent).apply("image.png")
+    native = ReadFilesRawTool(raw_agent).apply([{"relative_path": "image.png"}])
     original = native if raw else "existing text result"
     forwarded = MagicMock()
     forwarded.is_readonly.return_value = True
@@ -153,12 +182,12 @@ def test_cross_project_forwarding_preserves_text_and_native_content(raw_agent: A
     registered.get_project_instance.return_value = project
     raw_agent.serena_config.get_registered_project = MagicMock(return_value=registered)
     query = QueryProjectTool(raw_agent)
-    assert query.apply("other-project", "read_file_raw" if raw else "read_file", "{}") is original
+    assert query.apply("other-project", "read_files_raw" if raw else "read_files", "{}") is original
     wrapped = SerenaFastMCPTool(query, openai_tool_compatible=True, structured_output=structured)
 
     async def run() -> Any:
         return await wrapped.run(
-            {"project_name": "other-project", "tool_name": "read_file_raw", "tool_params_json": "{}"}, convert_result=True
+            {"project_name": "other-project", "tool_name": "read_files_raw", "tool_params_json": "{}"}, convert_result=True
         )
 
     result = anyio.run(run)
@@ -175,4 +204,4 @@ def test_raw_tool_preserves_agent_access_checks(raw_agent: Any) -> None:
 
     raw_agent.get_active_tools.return_value.contains_tool_name.return_value = False
     with pytest.raises(ToolCallError, match="is not active"):
-        ReadFileRawTool(raw_agent).apply_ex(relative_path="image.png", catch_exceptions=False)
+        ReadFilesRawTool(raw_agent).apply_ex(files=[{"relative_path": "image.png"}], catch_exceptions=False)

@@ -155,7 +155,7 @@ class CodeEditor(Generic[TSymbol], ABC):
         # since _find_unique_symbol passes include_location=True, it works here
         if symbol.body == symbol.name:
             raise ValueError(
-                f"Cannot insert after this symbol (not a function, class or method): {symbol}. Consider using insert_before_symbol instead."
+                f"Cannot insert after this symbol (not a function, class or method): {symbol}. Consider inserting before the symbol instead."
             )
 
         # make sure body always ends with at least one newline

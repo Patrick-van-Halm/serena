@@ -208,7 +208,7 @@ The following variables can be used in all of the above templates:
 |---------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `available_tools`   | the list of names of the tools that are currently exposed to the LLM. Use it to include content conditionally, e.g. `{% if 'replace_contents' in available_tools %}…{% endif %}`.                                                                                                                                                                           |
 | `available_markers` | the list of names of the tool markers (tool categories, e.g. `ToolMarkerSymbolicRead`) for which at least one tool is exposed; useful for conditioning on entire groups of tools.                                                                                                                                                                          |
-| `tool_names`        | a mapping from canonical tool names to effective tool names, which accounts for legacy tool renames as well as for tools being functionally replaced due to the active language backend (e.g. `find_symbol` being replaced by `jet_brains_find_symbol` when the JetBrains backend is active). Prefer `{{ tool_names['find_symbol'] }}` over hard-coded names. |
+| `tool_names`        | a mapping from canonical tool names to effective tool names, which accounts for legacy tool renames as well as for tools being functionally replaced due to the active language backend (e.g. `find_symbols` being replaced by `jet_brains_find_symbols` when the JetBrains backend is active). Prefer `{{ tool_names['find_symbols'] }}` over hard-coded names. |
 
 Context, mode and project prompts (but not Serena's system prompt) additionally support the following function:
 
@@ -768,7 +768,7 @@ The following settings are supported for the Java language server:
 | `runtimes` | `[]` | Extra JRE/JDK entries registered with JDT-LS via `java.configuration.runtimes`. Use this when a project's source/target level exceeds the JDK JDT-LS itself runs on (currently JDK 21 in default vscode-java VSIX mode). Each entry is a mapping with required `name` (e.g. `JavaSE-25`, matching the `JavaSE-NN` container the build tool requests) and `path` (JDK/JRE home directory; must exist), plus optional `default`, `sources`, and `javadoc` (passed through to JDT-LS). Entries extend rather than replace the bundled `JavaSE-21` runtime; an entry that reuses the `JavaSE-21` name overrides the bundled one. Changing this setting invalidates the JDTLS workspace hash so a fresh import is performed. |
 | `gradle_version` | `8.14.2` | (vscode-java mode only) Override the Gradle distribution version Serena downloads by default. |
 | `vscode_java_version` | `1.54.0-923` | (vscode-java mode only) Override the bundled `vscode-java` runtime bundle version Serena downloads by default. |
-| `lombok_show_generated` | `true` | Show Lombok-generated methods (`getX/setX`, `builder()`, `equals/hashCode/toString`, `withX`, fluent accessors) in `find_symbol`, `get_symbols_overview` and the symbol-edit tools. Set to `false` to restore the previous JDTLS default and hide the synthetic methods (e.g. when `@Data` classes pollute the outline with too many getters/setters). Requires JDTLS commit `b2d8952` / `vscode-java >= 1.53.0`; the bundled default already meets this. |
+| `lombok_show_generated` | `true` | Show Lombok-generated methods (`getX/setX`, `builder()`, `equals/hashCode/toString`, `withX`, fluent accessors) in `find_symbols`, `get_symbols_overviews` and the symbol-edit tools. Set to `false` to restore the previous JDTLS default and hide the synthetic methods (e.g. when `@Data` classes pollute the outline with too many getters/setters). Requires JDTLS commit `b2d8952` / `vscode-java >= 1.53.0`; the bundled default already meets this. |
 | `jdtls_xmx` | `3G` | Maximum heap size for the JDTLS server JVM. |
 | `jdtls_xms` | `100m` | Initial heap size for the JDTLS server JVM. |
 
@@ -1021,7 +1021,7 @@ ls_specific_settings:
 ```
 
 Notes:
-- Extensions added via `file_filter` are also synced into Serena's Perl source-file matcher, so `find_symbol` and symbol indexing treat the same files as the language server. Defaults are unchanged when these keys are omitted.
+- Extensions added via `file_filter` are also synced into Serena's Perl source-file matcher, so `find_symbols` and symbol indexing treat the same files as the language server. Defaults are unchanged when these keys are omitted.
 - The matcher is reset on every language server activation, so one project's `file_filter` does not leak into another.
 
 #### PHP (`Intelephense`)
@@ -1049,7 +1049,7 @@ ls_specific_settings:
 ```
 
 Notes:
-- Extensions added via `file_filter` are synced into Serena's PHP source-file matcher and pushed to Intelephense as `intelephense.files.associations` globs at startup, so `find_symbol` and the language server treat the same files as PHP sources.
+- Extensions added via `file_filter` are synced into Serena's PHP source-file matcher and pushed to Intelephense as `intelephense.files.associations` globs at startup, so `find_symbols` and the language server treat the same files as PHP sources.
 - The matcher is reset on every language server activation, so one project's `file_filter` does not leak into another.
 
 #### PHP (`Phpactor`)

@@ -16,7 +16,7 @@ from serena.shared_mcp_recovery import (
 
 class EvidenceSource:
     def __init__(self):
-        self.evidence = RecoveryEvidence("blocked-call", "find_symbol", True, True, 31.0)
+        self.evidence = RecoveryEvidence("blocked-call", "find_symbols", True, True, 31.0)
 
     def get_recovery_evidence(self, scope):
         return self.evidence
@@ -30,12 +30,19 @@ def recovery(monkeypatch):
     return DaemonRecovery(source), source, clock, RecoveryScope("/repo", "codex", "chat")
 
 
-@pytest.mark.parametrize("changes", [
-    {"running": False}, {"overdue_seconds": 0}, {"overdue_seconds": 29.9},
-    {"read_only": False}, {"tool_name": "replace_symbol_body"},
-    {"tool_name": "execute_shell_command"}, {"tool_name": "serena_repl"},
-    {"tool_name": "unknown_tool"},
-])
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"running": False},
+        {"overdue_seconds": 0},
+        {"overdue_seconds": 29.9},
+        {"read_only": False},
+        {"tool_name": "replace_symbol_bodies"},
+        {"tool_name": "execute_shell_command"},
+        {"tool_name": "serena_repl"},
+        {"tool_name": "unknown_tool"},
+    ],
+)
 def test_unproven_or_modifying_work_cannot_authorize_restart(recovery, changes):
     controller, source, _, scope = recovery
     source.evidence = replace(source.evidence, **changes)

@@ -148,7 +148,7 @@ serena> tools list --help
 serena> tools list --all
 
 # get detailed description of a specific tool
-serena> tools description find_symbol
+serena> tools description find_symbols
 
 # creating a new Serena project in the current directory 
 serena project create
