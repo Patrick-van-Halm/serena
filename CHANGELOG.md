@@ -16,6 +16,10 @@ Status of the `main` branch. Changes prior to the next official version change w
     launchers, preserving the healthy daemon instead of treating it as a competing process.
   - Fix: loopback project-server startup no longer depends on reverse DNS, avoiding macOS resolver
     stalls before the HTTP listener becomes ready.
+  - Fix: legacy daemon discovery verifies individual Serena processes, avoiding privileged system-wide
+    socket enumeration on macOS while preserving ownership and endpoint checks.
+  - Fix: ccls now provides hierarchical document symbols with bare method names, correct nesting and
+    full symbol ranges; previously persisted flat symbol results are invalidated.
   - **Major**: Add the Serena REPL as a new agent interface, reducing the tool set to a minimum and providing
     a general code execution environment for all Serena operations.
     This has several significant advantages over regular tool executions.  

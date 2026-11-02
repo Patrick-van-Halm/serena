@@ -31,6 +31,7 @@ https://github.com/MaskRay/ccls
 
 import logging
 import threading
+from collections.abc import Hashable
 from typing import Any
 
 from overrides import override
@@ -64,6 +65,11 @@ class CCLS(SolidLanguageServer):
         """
         super().__init__(config, repository_root_path, None, "cpp", solidlsp_settings)
         self.server_ready = threading.Event()
+
+    @override
+    def _raw_document_symbols_cache_fingerprint(self) -> Hashable:
+        # hierarchical symbols provide local names, nesting and complete ranges
+        return 1
 
     def _create_dependency_provider(self) -> LanguageServerDependencyProvider:
         return self.DependencyProvider(self._custom_settings, self._ls_resources_dir)
@@ -115,7 +121,7 @@ class CCLS(SolidLanguageServer):
                     "completion": {"dynamicRegistration": True, "completionItem": {"snippetSupport": True}},
                     "definition": {"dynamicRegistration": True},
                     "references": {"dynamicRegistration": True},
-                    "documentSymbol": {"dynamicRegistration": True},
+                    "documentSymbol": {"dynamicRegistration": True, "hierarchicalDocumentSymbolSupport": True},
                 },
                 "workspace": {"workspaceFolders": True, "didChangeConfiguration": {"dynamicRegistration": True}},
             },

@@ -234,6 +234,45 @@ def test_replaces_only_owned_stale_listener_on_selected_port(daemon_environment,
     assert len(daemon_environment.records()) == 3
 
 
+@pytest.mark.parametrize("inaccessible_is_serena", [False, True], ids=["unrelated", "qualified-candidate"])
+def test_legacy_discovery_handles_inaccessible_processes(daemon_environment, monkeypatch, inaccessible_is_serena) -> None:
+    selected, other = unused_port(), unused_port()
+    stale = daemon_environment.launch(selected, build="old-build", mode="legacy")
+    stale_pid = daemon_environment.records()[-1]["pid"]
+    inaccessible = daemon_environment.launch(other, build="old-build", unrelated=not inaccessible_is_serena)
+    inaccessible_pid = daemon_environment.records()[-1]["pid"]
+    original_process_iter = psutil.process_iter
+
+    def permission_denied(*args, **kwargs):
+        raise psutil.AccessDenied(inaccessible_pid)
+
+    with monkeypatch.context() as patch:
+
+        def process_iter(*args, **kwargs):
+            # preserve real identities and sockets, denying access only for this selected process
+            for process in original_process_iter(*args, **kwargs):
+                if process.pid == inaccessible_pid:
+                    patch.setattr(process, "net_connections", permission_denied)
+                yield process
+
+        # macOS cannot provide a system-wide socket view to an ordinary user
+        patch.setattr(psutil, "net_connections", permission_denied)
+        patch.setattr(psutil, "process_iter", process_iter)
+        coordinator = SharedMCPDaemon(daemon_environment.config(selected))
+        if inaccessible_is_serena:
+            with pytest.raises(ProjectServerEndpointError, match="Cannot discover the listener"):
+                coordinator.ensure_running(10)
+            assert stale.poll() is None
+            assert len(daemon_environment.records()) == 2
+        else:
+            client = coordinator.ensure_running(10)
+            assert client.pid != stale_pid
+            stale.wait(timeout=5)
+            assert len(daemon_environment.records()) == 3
+
+    assert inaccessible.poll() is None
+
+
 def test_spoofed_pid_cannot_kill_serena_on_another_port(daemon_environment) -> None:
     selected, other = unused_port(), unused_port()
     independent = daemon_environment.launch(other)

@@ -107,29 +107,60 @@ def test_task_executor_cancel_future(executor):
 
 
 def test_task_executor_cancellation_via_task_info(executor):
-    first = Task(0.2)
-    second = Task(0.01)
-    executor.issue_task(first.run, "task1")
-    executor.issue_task(second.run, "task2")
-    time.sleep(0.03)
-    task_infos = executor.get_current_tasks()
-    task_infos2 = executor.get_current_tasks()
+    """Task-info cancellation keeps unfinished work visible and the queue serial."""
+    first_started = threading.Event()
+    first_finished = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    release_second = threading.Event()
 
-    assert len(task_infos) == 2
-    assert "task1" in task_infos[0].name
-    assert "task2" in task_infos[1].name
-    assert task_infos2[0].task_id == task_infos[0].task_id
+    def first():
+        first_started.set()
+        assert release_first.wait(2)
+        first_finished.set()
 
-    task_infos[0].cancel()
-    time.sleep(0.05)
-    task_infos3 = executor.get_current_tasks()
-    # The cancelled future remains the current underlying execution until its
-    # thread exits, so it cannot become a detached concurrent task.
-    assert len(task_infos3) == 2
-    assert task_infos3[0].future.cancelled()
+    def second():
+        second_started.set()
+        assert first_finished.is_set()
+        assert release_second.wait(2)
+        return True
 
-    time.sleep(0.25)
-    assert second.did_run
+    first_task = executor.issue_task(first, "task1")
+    second_task = executor.issue_task(second, "task2")
+    try:
+        assert first_started.wait(1)
+        task_infos = executor.get_current_tasks()
+        task_infos2 = executor.get_current_tasks()
+
+        assert len(task_infos) == 2
+        assert "task1" in task_infos[0].name
+        assert "task2" in task_infos[1].name
+        assert task_infos[0].is_running
+        assert not task_infos[1].is_running
+        task_ids = [task_info.task_id for task_info in task_infos]
+        assert [task_info.task_id for task_info in task_infos2] == task_ids
+
+        task_infos[0].cancel()
+        with pytest.raises(CancelledError):
+            first_task.result(timeout=1)
+        assert not second_started.wait(0.05)
+        task_infos3 = executor.get_current_tasks()
+        # Cancellation cannot hide a still-running body or dispatch its successor.
+        assert [task_info.task_id for task_info in task_infos3] == task_ids
+        assert task_infos3[0].is_running
+        assert task_infos3[0].future.cancelled()
+        assert not task_infos3[1].is_running
+
+        release_first.set()
+        assert second_started.wait(1)
+        task_infos4 = executor.get_current_tasks()
+        assert len(task_infos4) == 1
+        assert task_infos4[0].task_id == task_ids[1]
+        assert task_infos4[0].is_running
+    finally:
+        release_first.set()
+        release_second.set()
+    assert second_task.result(timeout=1) is True
 
 
 def test_timed_out_task_does_not_overlap_following_task() -> None:

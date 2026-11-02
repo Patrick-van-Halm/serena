@@ -79,6 +79,14 @@ def _create_ls(
     additional_workspace_folders: list[str] | None = None,
     solidlsp_dir: Path | None = None,
 ) -> SolidLanguageServer:
+    # avoid ccls's upstream race between its background index and a didOpen upgrade
+    # by indexing locals from the start in the small default fixture; explicit projects
+    # and settings retain control over their indexing and memory tradeoffs
+    if ls_id == LanguageServerId.CPP_CCLS and repo_path is None:
+        ls_specific_settings = {
+            LanguageServerId.CPP_CCLS: {"initializationOptions": {"index": {"initialNoLinkage": True}}},
+            **(ls_specific_settings or {}),
+        }
     ignored_paths = ignored_paths or []
     if repo_path is None:
         repo_path = str(get_repo_path(ls_id))
