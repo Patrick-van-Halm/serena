@@ -214,7 +214,7 @@ class FsApi(FacadeApi):
         super().__init__(
             agent,
             name="fs",
-            description="the project's files as units (as opposed to their content, see `edit`)",
+            description="files in the active project or startup working directory (for content edits, see `edit`)",
             types=[
                 ReferencedType(
                     MatchedConsecutiveLines, members=["source_file_path", "matched_lines", "start_line", "end_line", "to_display_string"]
@@ -226,17 +226,17 @@ class FsApi(FacadeApi):
         """Validate a path against the active-project boundary and return an absolute lexical path."""
         if FileProxy.is_external_path(path):
             raise ValueError("Encoded JetBrains external paths are not supported by raw filesystem operations.")
-        project = self._get_project()
+        project = self._get_file_system_project()
         project.validate_relative_path(path)
         return Path(os.path.abspath(os.path.join(project.project_root, path)))
 
     def _mark_file_system_dirty_if_project_path(self, *paths: str) -> None:
-        project = self._get_project()
+        project = self._get_file_system_project()
         if any(project.is_path_in_project(path) for path in paths):
             project.mark_file_system_dirty()
 
     def _is_project_root(self, path: Path) -> bool:
-        root = Path(os.path.abspath(self._get_project().project_root))
+        root = Path(os.path.abspath(self._get_file_system_project().project_root))
         return os.path.normcase(str(path)) == os.path.normcase(str(root))
 
     @staticmethod
@@ -273,7 +273,7 @@ class FsApi(FacadeApi):
             destination_existing_real = destination.resolve()
             if source_real.is_relative_to(destination_existing_real):
                 raise ValueError(f"Refusing to overwrite destination {destination}: it contains the source path.")
-            project_root_real = Path(self._get_project().project_root).resolve()
+            project_root_real = Path(self._get_file_system_project().project_root).resolve()
             if project_root_real == destination_existing_real or project_root_real.is_relative_to(destination_existing_real):
                 raise ValueError(f"Refusing to overwrite destination {destination}: it contains the active project root.")
 
@@ -295,7 +295,7 @@ class FsApi(FacadeApi):
         :param end_line: the 0-based index of the last line to be retrieved (inclusive). If None, read until the end of the file.
         :return: the content
         """
-        project = self._get_project()
+        project = self._get_file_system_project()
         project.validate_relative_path(relative_path)
 
         # Read only the requested range where the backing file supports it, using the same
@@ -312,7 +312,7 @@ class FsApi(FacadeApi):
         :param content: the (appropriately encoded) content to write to the file
         :return: a message indicating success
         """
-        project = self._get_project()
+        project = self._get_file_system_project()
         project_root = Path(project.project_root)
         abs_path = (project_root / relative_path).resolve()
         will_overwrite_existing = abs_path.exists()
@@ -342,7 +342,6 @@ class FsApi(FacadeApi):
         :param recursive: whether a non-empty directory may be deleted recursively
         :return: a message indicating what was deleted
         """
-        self._get_project()
         path = self._resolve_fs_path(relative_path)
         if self._is_project_root(path):
             raise ValueError("Refusing to delete the active project root.")
@@ -366,7 +365,6 @@ class FsApi(FacadeApi):
         :param overwrite: whether an existing destination may be replaced
         :return: a message indicating success
         """
-        self._get_project()
         source = self._resolve_fs_path(source_path)
         destination = self._resolve_fs_path(destination_path)
         if not self._path_exists(source):
@@ -396,7 +394,6 @@ class FsApi(FacadeApi):
         :param overwrite: whether an existing destination may be replaced
         :return: a message indicating success
         """
-        self._get_project()
         source = self._resolve_fs_path(source_path)
         if self._is_project_root(source):
             raise ValueError("Refusing to move the active project root.")
@@ -422,7 +419,7 @@ class FsApi(FacadeApi):
         :param skip_ignored_files: whether to skip files and directories that are ignored
         :return: the listing
         """
-        project = self._get_project()
+        project = self._get_file_system_project()
         if not project.relative_path_exists(relative_path):
             raise FileNotFoundError(f"Directory not found: {relative_path} (check if the path is correct relative to the project root)")
         project.validate_relative_path(relative_path)
@@ -446,7 +443,7 @@ class FsApi(FacadeApi):
         :param relative_path: path to the directory to search in; pass "." to scan the project root. With full_access_mode enabled it may be absolute or point outside the project.
         :return: the relative paths of the matching files
         """
-        project = self._get_project()
+        project = self._get_file_system_project()
         project.validate_relative_path(relative_path)
 
         is_ignored_path_fn = project.get_is_ignored_path_fn(relative_path, skip_ignored_paths=False)
@@ -496,7 +493,7 @@ class FsApi(FacadeApi):
         :param multiline: whether to apply multi-line matching (default: True), enabling the flags re.DOTALL and re.MULTILINE
         :return: the matches, rendered as a mapping from file paths to matched consecutive lines (0-based line numbers)
         """
-        project = self._get_project()
+        project = self._get_file_system_project()
         relative_path = relative_path.strip()
         if relative_path:
             project.validate_relative_path(relative_path)

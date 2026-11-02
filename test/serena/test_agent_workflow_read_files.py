@@ -200,6 +200,7 @@ def test_cancellation_propagates_instead_of_becoming_a_file_error(batch_file_pro
 def test_single_file_uses_the_batch_interface(batch_file_project: Project):
     agent = MagicMock()
     agent.get_active_project_or_raise.return_value = batch_file_project
+    agent.get_file_system_project.return_value = batch_file_project
     path = Path(batch_file_project.project_root) / "single.txt"
     path.write_text("one\ntwo\n", encoding="utf-8")
     rows = json.loads(ReadFilesTool(agent).apply([{"relative_path": "single.txt", "start_line": 1, "end_line": 1}]))["results"]

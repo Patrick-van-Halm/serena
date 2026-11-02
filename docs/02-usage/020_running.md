@@ -102,6 +102,27 @@ Some useful options include:
   * `--mode <mode>`: specify one or more [modes](modes) to enable (can be passed several times)
   * `--open-web-dashboard <true|false>`: whether to open the web dashboard on startup (enabled by default)
 
+### Working Without a Project
+
+Serena can read, write, search, and edit files and execute shell commands without an active project.
+If no project is selected, relative paths and the default shell working directory use the directory
+from which Serena was started. Passing `--project <directory>` selects that directory as the filesystem
+root even if it has no Serena project configuration; startup does not create one automatically.
+The same fallback applies to `--project-from-cwd` when no configured project is found.
+
+Memory tools and the `s.mem` REPL API can list, read, write, edit, rename, and delete global memories
+without an active project. Use names such as `global/notes`; names without the `global/` prefix
+remain project-local and require an active project. Global read-only and ignored-memory settings
+still apply. Project onboarding also requires an active project.
+
+Language-aware operations, including symbol lookup, references, and symbolic edits, still require
+an active project. Use `activate_project` when these operations are needed. Tool availability still
+follows the selected context and modes, and filesystem access restrictions remain in effect.
+
+`start-mcp-bridge` uses a local MCP server for sessions without a configured project. Configured
+projects continue to use the shared project daemon. Both commands support the same projectless
+filesystem and shell behavior.
+
 ## Other Commands
 
 Serena provides several other commands in addition to `start-mcp-server`, 

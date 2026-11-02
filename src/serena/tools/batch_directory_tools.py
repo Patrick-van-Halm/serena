@@ -5,7 +5,7 @@ from typing import NotRequired
 from typing_extensions import TypedDict
 
 from serena.agent_workflow.directories import DirectoryBatchReader, DirectoryRequest
-from serena.tools.tools_base import Tool
+from serena.tools.tools_base import Tool, ToolMarkerDoesNotRequireActiveProject
 from serena.util.tool_call import ToolCallContext
 
 
@@ -18,7 +18,7 @@ class DirectoryInput(TypedDict):
     max_depth: NotRequired[int]
 
 
-class ListDirsTool(Tool):
+class ListDirsTool(Tool, ToolMarkerDoesNotRequireActiveProject):
     """List several known directories in one bounded, read-only request."""
 
     def apply(self, directories: list[DirectoryInput], max_entries_per_dir: int = 200, max_total_chars: int = 20000) -> str:
@@ -38,6 +38,6 @@ class ListDirsTool(Tool):
         :return: independent dirs/files/symlinks arrays with errors and truncation reasons
         """
         context = ToolCallContext.current()
-        reader = DirectoryBatchReader(self.project, context.call.check if context else None)
+        reader = DirectoryBatchReader(self.file_system_project, context.call.check if context else None)
         requests = [DirectoryRequest.model_validate(item) for item in directories]
         return reader.read(requests, max_entries_per_dir, max_total_chars)

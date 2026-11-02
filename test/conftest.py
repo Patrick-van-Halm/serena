@@ -249,13 +249,16 @@ def project_with_ls_context(ls_id: LanguageServerId, repo_root_override: str | N
 
 @contextmanager
 def agent_for_project_context(ls_id: LanguageServerId, repo_root_override: str | None = None) -> Iterator[SerenaAgent]:
+    """Starts an agent with a project and language server for language integration tests."""
     project_root = str(get_repo_path(ls_id)) if repo_root_override is None else repo_root_override
     agent = SerenaAgent(project=project_root, serena_config=create_default_serena_config())
+    agent.activate_project_from_path_or_name(project_root)
 
     # wait for agent to be ready
     agent.execute_task(lambda: None)
 
     try:
+        agent.get_language_server_manager_or_raise()
         yield agent
     finally:
         agent.on_shutdown()

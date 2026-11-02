@@ -358,6 +358,9 @@ class FacadeApi(ABC):
     def _get_project(self) -> Project:
         return self._agent.get_active_project_or_raise()
 
+    def _get_file_system_project(self) -> Project:
+        return self._agent.get_file_system_project()
+
     def _create_code_editor(self) -> "CodeEditor":
         """
         :return: a code editor for the active project, using the active language backend

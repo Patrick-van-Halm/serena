@@ -26,6 +26,7 @@ def test_search_for_pattern_snippet_stage(tmp_path):
     project = Project.load(str(tmp_path), serena_config=SerenaConfig(gui_log_window=False, web_dashboard=False))
     agent = MagicMock()
     agent.get_active_project_or_raise.return_value = project
+    agent.get_file_system_project.return_value = project
     tool = SearchForPatternTool(agent)
 
     def run(cap: int) -> str:
@@ -48,7 +49,6 @@ def test_search_for_pattern_snippet_stage(tmp_path):
     assert "Match lines per file" in bare and '"text":' not in bare
 
 
-
 def test_search_for_pattern_many_matches_on_one_huge_line_is_memory_bounded(tmp_path, monkeypatch):
     # This models minified/generated files: the same very long line can contain thousands of
     # regex hits. Rendering that full line once per hit used to create enormous temporary strings.
@@ -58,6 +58,7 @@ def test_search_for_pattern_many_matches_on_one_huge_line_is_memory_bounded(tmp_
     project = Project.load(str(tmp_path), serena_config=SerenaConfig(gui_log_window=False, web_dashboard=False))
     agent = MagicMock()
     agent.get_active_project_or_raise.return_value = project
+    agent.get_file_system_project.return_value = project
     tool = SearchForPatternTool(agent)
 
     from serena.util.text_utils import MatchedConsecutiveLines

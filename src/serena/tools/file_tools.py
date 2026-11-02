@@ -9,7 +9,7 @@ File and file system-related tools, specifically for
 
 from typing import TYPE_CHECKING, Literal, cast
 
-from serena.tools import EditingToolWithDiagnostics, Tool, ToolMarkerCanEdit, ToolMarkerOptional
+from serena.tools import EditingToolWithDiagnostics, Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActiveProject, ToolMarkerOptional
 
 if TYPE_CHECKING:
     from serena.repl.api.edit_api import EditApi
@@ -29,7 +29,7 @@ class EditApiMixin:
         return EditApi(tool.agent)
 
 
-class FsApiMixin:
+class FsApiMixin(ToolMarkerDoesNotRequireActiveProject):
     """
     Mixin for tools which delegate to the file system API.
     The API is imported locally, since the API module refers to the tools (as corresponding tools).
@@ -44,14 +44,14 @@ class FsApiMixin:
 
 class CreateTextFileTool(EditingToolWithDiagnostics, FsApiMixin):
     """
-    Creates/overwrites a file in the project directory, or outside it when full_access_mode is enabled.
+    Creates/overwrites a file in the project or startup working directory, or outside it when full_access_mode is enabled.
     """
 
     def apply(self, relative_path: str, content: str) -> str:
         """
         Write a new file or overwrite an existing file with the given content.
 
-        :param relative_path: path to the file to create; outside-project paths require full_access_mode
+        :param relative_path: path relative to the project or startup working directory; outside paths require full_access_mode
         :param content: the (appropriately encoded) content to write to the file
         :return: a message indicating success or failure
         """
@@ -69,7 +69,7 @@ class FindFileTool(Tool, FsApiMixin):
         Finds files matching the given file mask within the given relative path
 
         :param file_mask: the filename or file mask (using the wildcards * or ?) to search for
-        :param relative_path: directory to search; outside-project paths require full_access_mode; pass "." for the project root
+        :param relative_path: directory to search; pass "." for the project or startup working directory; outside paths require full_access_mode
         :param skip_ignored_files: whether to skip ignored files/directories
         :return: a JSON object with the list of matching files
         """
@@ -126,7 +126,7 @@ class MovePathTool(Tool, ToolMarkerCanEdit, FsApiMixin):
         return self._api().move_path(source_path, destination_path, overwrite)
 
 
-class ReplaceInFilesTool(EditingToolWithDiagnostics, EditApiMixin):
+class ReplaceInFilesTool(EditingToolWithDiagnostics, ToolMarkerDoesNotRequireActiveProject, EditApiMixin):
     """
     Replaces occurrences of a pattern across multiple files, with dry-run preview and per-occurrence selection.
     """
@@ -203,7 +203,7 @@ class ReplaceInFilesTool(EditingToolWithDiagnostics, EditApiMixin):
             return diagnostics_context.format_result(result)
 
 
-class DeleteLinesTool(EditingToolWithDiagnostics, ToolMarkerOptional, EditApiMixin):
+class DeleteLinesTool(EditingToolWithDiagnostics, ToolMarkerDoesNotRequireActiveProject, ToolMarkerOptional, EditApiMixin):
     """
     Deletes a range of lines within a file.
     """
@@ -227,7 +227,7 @@ class DeleteLinesTool(EditingToolWithDiagnostics, ToolMarkerOptional, EditApiMix
             return diagnostics_context.format_result(self._api().delete_lines(relative_path, start_line, end_line))
 
 
-class ReplaceLinesTool(EditingToolWithDiagnostics, ToolMarkerOptional, EditApiMixin):
+class ReplaceLinesTool(EditingToolWithDiagnostics, ToolMarkerDoesNotRequireActiveProject, ToolMarkerOptional, EditApiMixin):
     """
     Replaces a range of lines within a file with new content.
     """
@@ -253,7 +253,7 @@ class ReplaceLinesTool(EditingToolWithDiagnostics, ToolMarkerOptional, EditApiMi
             return diagnostics_context.format_result(self._api().replace_lines(relative_path, start_line, end_line, content))
 
 
-class InsertAtLineTool(EditingToolWithDiagnostics, ToolMarkerOptional, EditApiMixin):
+class InsertAtLineTool(EditingToolWithDiagnostics, ToolMarkerDoesNotRequireActiveProject, ToolMarkerOptional, EditApiMixin):
     """
     Inserts content at a given line in a file.
     """

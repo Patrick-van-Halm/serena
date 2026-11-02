@@ -24,6 +24,7 @@ def project(tmp_path: Path) -> Project:
 def api(project: Project) -> EditApi:
     agent = MagicMock()
     agent.get_active_project_or_raise.return_value = project
+    agent.get_file_system_project.return_value = project
     agent.serena_config.default_max_tool_answer_chars = 10000
     return EditApi(agent)
 

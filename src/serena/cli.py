@@ -40,7 +40,6 @@ from serena.constants import (
     SERENAS_OWN_MODE_YAMLS_DIR,
 )
 from serena.prompt_factory import SerenaPromptFactory
-from serena.tools import ActivateProjectTool
 from serena.util.cli_util import AutoRegisteringGroup
 from serena.util.logging import MemoryLogHandler
 from solidlsp.ls_config import LanguageServerId, LanguageServerIdLike
@@ -367,7 +366,6 @@ class TopLevelCommands(AutoRegisteringGroup):
         log.info("Storing logs in %s", log_path)
 
         # Handle --project-from-cwd flag
-        project_activation_error: str | None = None
         if project_from_cwd:
             if project is not None or project_file_arg is not None:
                 raise click.UsageError("--project-from-cwd cannot be used with --project or positional project argument")
@@ -375,12 +373,10 @@ class TopLevelCommands(AutoRegisteringGroup):
             if project is not None:
                 log.info("Auto-detected project root: %s", project)
             else:
-                project_activation_error = (
-                    f"No project root found from cwd={os.getcwd()} (no .serena/project.yml or .git found); "
-                    "no project activated. If the folder is a coding project folder to be worked on, "
-                    f"activate the folder explicitly using the {ActivateProjectTool.get_name_from_cls()} tool."
+                log.info(
+                    "No project root found from cwd=%s; starting without a project for filesystem and shell operations.",
+                    os.getcwd(),
                 )
-                log.warning(project_activation_error)
 
         project_file = project_file_arg or project
 
@@ -399,7 +395,6 @@ class TopLevelCommands(AutoRegisteringGroup):
             log_level=log_level,
             trace_lsp_communication=trace_lsp_communication,
             tool_timeout=tool_timeout,
-            project_activation_error=project_activation_error,
         )
         if project_file_arg:
             log.warning(
@@ -420,7 +415,7 @@ class TopLevelCommands(AutoRegisteringGroup):
     @staticmethod
     @click.command(
         "start-mcp-bridge",
-        help="Start a lightweight stdio MCP bridge backed by Serena's shared project daemon.",
+        help="Start a stdio MCP bridge backed by Serena's shared project daemon, or a local server when no project is configured.",
         context_settings={"max_content_width": _MAX_CONTENT_WIDTH},
     )
     @click.option("--project", type=PROJECT_TYPE, default=None, help="Project path or registered project name.")
@@ -435,7 +430,7 @@ class TopLevelCommands(AutoRegisteringGroup):
         "--project-from-cwd",
         is_flag=True,
         default=False,
-        help="Auto-detect the project from the bridge process working directory.",
+        help="Auto-detect the project from the bridge process working directory; use local filesystem and shell tools if none is configured.",
     )
     def start_mcp_bridge(project: str | None, context: str, project_from_cwd: bool) -> None:
         from serena.mcp_bridge import SerenaMCPBridge
@@ -444,22 +439,35 @@ class TopLevelCommands(AutoRegisteringGroup):
             if project is not None:
                 raise click.UsageError("--project-from-cwd cannot be used together with --project")
             project = find_project_root()
-            if project is None:
-                raise click.ClickException(f"No project root found from cwd={os.getcwd()} (no .serena/project.yml or .git found).")
 
-        if project is None:
-            raise click.UsageError("Pass --project or --project-from-cwd")
-
-        if not os.path.isdir(project):
-            config = SerenaConfig.from_config_file()
+        # resolve named projects while retaining plain directories as filesystem roots
+        config = SerenaConfig.from_config_file()
+        if project is not None and not os.path.isdir(project):
             registered = config.get_registered_project(project)
             if registered is None:
                 raise click.ClickException(f"Unknown Serena project: {project}")
             project = str(registered.project_root)
 
+        # validate configuration before binding the bridge to a shared project runtime
+        configured_project = False
+        if project is not None:
+            try:
+                ProjectConfig.load(project, serena_config=config)
+                configured_project = True
+            except FileNotFoundError:
+                pass
+            except Exception as e:
+                log.warning("Project configuration unavailable for %s: %s", project, e)
+
+        # keep projectless sessions local so the shared daemon remains bound to configured projects
+        if not configured_project:
+            click.get_current_context().invoke(TopLevelCommands.start_mcp_server, project=project, context=context)
+            return
+
         # stdout is reserved for MCP stdio framing; keep bridge logging on stderr only.
         if not logging.is_enabled():
             logging.basicConfig(level=logging.WARNING, stream=sys.stderr, format=SERENA_LOG_FORMAT)
+        assert project is not None
         SerenaMCPBridge(project_root=project, context_name=context).run()
 
     @staticmethod

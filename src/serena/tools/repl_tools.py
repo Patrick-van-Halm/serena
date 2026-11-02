@@ -4,10 +4,10 @@ Tools which provide access to Serena's functionality through Python code executi
 
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-from serena.tools.tools_base import Tool, ToolMarkerBeta, ToolMarkerOptional
+from serena.tools.tools_base import Tool, ToolMarkerBeta, ToolMarkerDoesNotRequireActiveProject, ToolMarkerOptional
 
 
-class SerenaReplTool(Tool, ToolMarkerOptional, ToolMarkerBeta):
+class SerenaReplTool(Tool, ToolMarkerOptional, ToolMarkerBeta, ToolMarkerDoesNotRequireActiveProject):
     """
     Executes Python code which accesses Serena's functionality programmatically.
     """
@@ -17,7 +17,7 @@ class SerenaReplTool(Tool, ToolMarkerOptional, ToolMarkerBeta):
         if self.agent.is_single_project():
             docs += "\n\nAvailable facades:\n" + self.agent.get_repl().entrypoint.overview()
         else:
-            docs += "\n\nAvailable facades are provided at project activation"
+            docs += "\n\nUse s.info() to list available facades. File and shell operations work without a project; language-aware operations require one."
         return docs
 
     def apply(self, session: str, code: str) -> str:

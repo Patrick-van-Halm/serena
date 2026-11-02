@@ -421,7 +421,11 @@ class LanguageServerCodeEditor(CodeEditor[LanguageServerSymbol]):
         return msg
 
 
-class JetBrainsCodeEditor(CodeEditor[JetBrainsSymbol]):
+class LocalCodeEditor(CodeEditor[TSymbol]):
+    """
+    Text-file editor with atomic writes and no language-backend dependency.
+    """
+
     def __init__(self, project: Project) -> None:
         self._project = project
         super().__init__(project)
@@ -449,8 +453,17 @@ class JetBrainsCodeEditor(CodeEditor[JetBrainsSymbol]):
 
     @contextmanager
     def _open_file_context(self, relative_path: str) -> Iterator["CodeEditor.EditedFile"]:
+        self._project.validate_relative_path(relative_path)
         yield self.EditedFile(relative_path, self._project)
 
+    def _find_unique_symbol(self, name_path: str, relative_file_path: str) -> TSymbol:
+        raise ValueError("Symbol operations require an active project and language backend.")
+
+    def rename_symbol(self, name_path: str, relative_path: str, new_name: str) -> str:
+        raise ValueError("Symbol operations require an active project and language backend.")
+
+
+class JetBrainsCodeEditor(LocalCodeEditor[JetBrainsSymbol]):
     def _save_edited_file(self, edited_file: "CodeEditor.EditedFile") -> None:
         super()._save_edited_file(edited_file)
         with JetBrainsPluginClient.from_project(self._project) as client:

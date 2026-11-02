@@ -59,16 +59,17 @@ class MemoryApi(FacadeApi):
         super().__init__(
             agent,
             name="mem",
-            description="project memories, i.e. persistent notes for future tasks",
+            description="project and global memories, i.e. persistent notes for future tasks",
         )
 
     def _get_memory_manager(self) -> MemoryManager:
-        return self._get_project().memory_manager
+        return self._agent.get_memory_manager()
 
     @facade_method(corresponding_tool=ListMemoriesTool)
     def list_memories(self, topic: str = "") -> MemoryList:
         """
         Lists the available memories, optionally filtered by topic.
+        Without an active project, only global memories are available.
 
         :param topic: the topic (prefix of the memory name, e.g. "frontend") to restrict the listing to; empty for all memories
         :return: the memories
@@ -79,6 +80,7 @@ class MemoryApi(FacadeApi):
     def read_memory(self, memory_name: str) -> str:
         """
         Reads a memory.
+        Without an active project, the name must use the ``global/`` prefix.
 
         :param memory_name: the name of the memory
         :return: the memory's content
@@ -88,10 +90,11 @@ class MemoryApi(FacadeApi):
     @facade_method(can_edit=True, corresponding_tool=WriteMemoryTool)
     def write_memory(self, memory_name: str, content: str, max_chars: int = -1) -> str:
         """
-        Writes information (about the active project) to a memory.
+        Writes information to a project or global memory.
 
         The name should be meaningful and can include "/" to organize into topics.
         If explicitly instructed, use the "global/" prefix for writing a memory that is shared across projects.
+        Without an active project, only global memories are available.
         References to other memories should be inside backticks and prefixed with mem:,
         e.g., `mem:auth`.
 
@@ -175,7 +178,7 @@ class MemoryApi(FacadeApi):
         """
         # seed the project-local memory-maintenance memory (or detect a global override) so
         # the prompt can point the agent at the conventions before it writes anything
-        memory_maintenance_name = self._get_memory_manager().ensure_memory_maintenance_memory()
+        memory_maintenance_name = self._get_project().memory_manager.ensure_memory_maintenance_memory()
         return self._agent.prompt_factory.create_onboarding_prompt(
             system=platform.system(), memory_maintenance_name=memory_maintenance_name
         )

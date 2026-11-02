@@ -2,7 +2,7 @@
 
 from typing import TYPE_CHECKING, Literal, cast
 
-from serena.tools import Tool, ToolMarkerCanEdit
+from serena.tools import Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActiveProject
 
 if TYPE_CHECKING:
     from serena.repl.api.mem_api import MemoryApi
@@ -21,17 +21,18 @@ class MemoryApiMixin:
         return MemoryApi(tool.agent)
 
 
-class WriteMemoryTool(Tool, ToolMarkerCanEdit, MemoryApiMixin):
+class WriteMemoryTool(Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActiveProject, MemoryApiMixin):
     """
-    Write some information (utf-8-encoded) about this project that can be useful for future tasks to a memory in md format.
+    Write information (utf-8-encoded) useful for future tasks to a project or global memory in md format.
     The memory name should be meaningful.
     """
 
     def apply(self, memory_name: str, content: str, max_chars: int = -1) -> str:
         """
-        Write information about this project that can be useful for future tasks in md format.
+        Write information useful for future tasks in md format.
         The name should be meaningful and can include "/" to organize into topics.
         If explicitly instructed, use the "global/" prefix for writing a memory that is shared across projects.
+        Without an active project, only global memories are available.
         References to other memories should be inside backticks and prefixed with mem:,
         e.g., `mem:auth`.
 
@@ -42,7 +43,7 @@ class WriteMemoryTool(Tool, ToolMarkerCanEdit, MemoryApiMixin):
         return self._api().write_memory(memory_name, content, max_chars)
 
 
-class ReadMemoryTool(Tool, MemoryApiMixin):
+class ReadMemoryTool(Tool, ToolMarkerDoesNotRequireActiveProject, MemoryApiMixin):
     """
     Reads the content of a memory file.
     """
@@ -50,11 +51,12 @@ class ReadMemoryTool(Tool, MemoryApiMixin):
     def apply(self, memory_name: str) -> str:
         """
         Use to read a memory that is likely to be relevant to the current task, inferring relevance e.g. from the name.
+        Without an active project, the name must use the ``global/`` prefix.
         """
         return self._api().read_memory(memory_name)
 
 
-class ListMemoriesTool(Tool, MemoryApiMixin):
+class ListMemoriesTool(Tool, ToolMarkerDoesNotRequireActiveProject, MemoryApiMixin):
     """
     Lists available memories.
     """
@@ -62,11 +64,12 @@ class ListMemoriesTool(Tool, MemoryApiMixin):
     def apply(self, topic: str = "") -> str:
         """
         Lists available memories, optionally filtered by topic.
+        Without an active project, only global memories are available.
         """
         return self._api().list_memories(topic).represent()
 
 
-class DeleteMemoryTool(Tool, ToolMarkerCanEdit, MemoryApiMixin):
+class DeleteMemoryTool(Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActiveProject, MemoryApiMixin):
     """
     Delete a memory file.
     """
@@ -78,7 +81,7 @@ class DeleteMemoryTool(Tool, ToolMarkerCanEdit, MemoryApiMixin):
         return self._api().delete_memory(memory_name)
 
 
-class RenameMemoryTool(Tool, ToolMarkerCanEdit, MemoryApiMixin):
+class RenameMemoryTool(Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActiveProject, MemoryApiMixin):
     """
     Renames or moves a memory, updating references that are marked with the `mem:` prefix.
     """
@@ -93,7 +96,7 @@ class RenameMemoryTool(Tool, ToolMarkerCanEdit, MemoryApiMixin):
         return self._api().rename_memory(old_name, new_name)
 
 
-class EditMemoryTool(Tool, ToolMarkerCanEdit, MemoryApiMixin):
+class EditMemoryTool(Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActiveProject, MemoryApiMixin):
     """
     Replaces content matching a regular expression in a memory.
     """

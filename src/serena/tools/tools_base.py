@@ -68,6 +68,11 @@ class Component(ABC):
     def project(self) -> Project:
         return self.agent.get_active_project_or_raise()
 
+    @property
+    def file_system_project(self) -> Project:
+        """The active project or the startup working directory's filesystem scope."""
+        return self.agent.get_file_system_project()
+
     def create_code_editor(self) -> "CodeEditor":
         from ..code_editor import JetBrainsCodeEditor
 
@@ -516,7 +521,11 @@ class EditingToolWithDiagnostics(Tool, ToolMarkerCanEdit):
         :return: a context which captures the diagnostics before the edit, such that changes can be reported
             via `format_result`
         """
-        return DiagnosticsContext(self.agent, *edited_relative_paths, enable=self.ENABLE_DIAGNOSTICS)
+        return DiagnosticsContext(
+            self.agent,
+            *edited_relative_paths,
+            enable=self.ENABLE_DIAGNOSTICS and self.agent.get_active_project() is not None,
+        )
 
 
 @dataclass(kw_only=True)

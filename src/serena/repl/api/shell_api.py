@@ -120,11 +120,12 @@ class ShellApi(FacadeApi):
 
         :param command: the shell command to execute
         :param cwd: the working directory to execute the command in (absolute, or relative to the project root).
-            If None, the project root will be used.
+            Without an active project, paths are relative to the startup working directory.
+            If None, the project root or startup working directory will be used.
         :param capture_stderr: whether to capture and return stderr output
         :return: the output (object with properties stdout, stderr, return_code and cwd)
         """
-        project_root = self._get_project().project_root
+        project_root = self._get_file_system_project().project_root
         if cwd is None:
             _cwd = project_root
         elif os.path.isabs(cwd):

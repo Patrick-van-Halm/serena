@@ -75,9 +75,10 @@ class MemoryManager:
 
     @classmethod
     def _sanitize_name(cls, name: str) -> str:
-        """Corrects the name for common mistakes made by LLMs (``mem:`` prefix, ``.md`` suffix, OS-specific separators)."""
-        name = name.removeprefix(cls._MEMORY_REF_PREFIX)
-        if name.endswith(".md"):
+        """Normalizes supported wrappers and separators consistently for policy checks and file paths."""
+        while name.startswith(cls._MEMORY_REF_PREFIX):
+            name = name.removeprefix(cls._MEMORY_REF_PREFIX)
+        while name.endswith(".md"):
             name = name[:-3]
         return name.replace(os.sep, "/")
 
@@ -107,7 +108,7 @@ class MemoryManager:
         :return: the bare name to reference the maintenance memory by (without the ``mem:``
             prefix); either ``"global/memory_maintenance"`` or ``"memory_maintenance"``.
         :raises FileNotFoundError: if the shipped template is missing on disk.
-        :raises AssertionError: if this manager has no associated project directory.
+        :raises ValueError: if no global copy exists and this manager has no associated project directory.
         """
         global_name = f"{self.GLOBAL_TOPIC}/{self.MEMORY_MAINTENANCE_NAME}"
         if self.get_memory_file_path(global_name).exists():
@@ -177,14 +178,14 @@ class MemoryManager:
         name = self._sanitize_name(name)
         parts = name.split("/")
 
-        if ".." in parts:
-            raise ValueError(f"Memory name cannot contain '..' segments. Got: {name}")
+        if "." in parts or ".." in parts:
+            raise ValueError(f"Memory name cannot contain '.' or '..' segments. Got: {name}")
 
         # Reject absolute names and empty path segments: pathlib discards the base directory when
         # joined with an absolute path (e.g. "/etc/cron.d/backdoor" would reset to "/etc/cron.d"),
         # letting a memory name escape the sandbox. A leading "/" produces an empty first segment.
-        if os.path.isabs(name) or "" in parts:
-            raise ValueError(f"Memory name cannot be absolute or contain empty path segments. Got: {name}")
+        if os.path.isabs(name) or "" in parts or any(Path(part).drive for part in parts):
+            raise ValueError(f"Memory name cannot be absolute or contain drive prefixes or empty path segments. Got: {name}")
 
         if self._is_global(name):
             if name == self.GLOBAL_TOPIC:
@@ -196,7 +197,8 @@ class MemoryManager:
             return self._resolve_memory_path(self._global_memory_dir, sub_name.split("/"))
 
         # Project-local memory
-        assert self._project_memory_dir is not None, "Project dir was not passed at initialization"
+        if self._project_memory_dir is None:
+            raise ValueError("No active project. Activate a project for project memories, or use a 'global/' memory name.")
         return self._resolve_memory_path(self._project_memory_dir, parts)
 
     def _check_write_access(self, name: str, is_tool_context: bool) -> None:
@@ -267,6 +269,12 @@ class MemoryManager:
                     yield Path(root) / filename
 
     def _list_memories(self, search_dir: Path, base_dir: Path, prefix: str = "") -> MemoriesList:
+        # normalize topic aliases without resolving supported directory symlinks
+        search_dir = Path(os.path.abspath(search_dir))
+        base_dir = Path(os.path.abspath(base_dir))
+        if not search_dir.is_relative_to(base_dir):
+            raise ValueError("Memory topic resolves outside the memories directory.")
+
         result = self.MemoriesList()
         if not search_dir.exists():
             return result
@@ -285,7 +293,8 @@ class MemoryManager:
         return self._list_memories(dir_path, self._global_memory_dir, self.GLOBAL_TOPIC + "/")
 
     def list_project_memories(self, topic: str = "") -> MemoriesList:
-        assert self._project_memory_dir is not None, "Project dir was not passed at initialization"
+        if self._project_memory_dir is None:
+            return self.MemoriesList()
         dir_path = self._project_memory_dir
         if topic:
             dir_path = dir_path / topic.replace("/", os.sep)
@@ -294,7 +303,7 @@ class MemoryManager:
     def list_memories(self, topic: str = "") -> MemoriesList:
         """
         Lists all memories, optionally filtered by topic.
-        If the topic is omitted, both global and project-specific memories are returned.
+        If the topic is omitted, global memories and any available project-specific memories are returned.
         """
         memories: MemoryManager.MemoriesList
 
@@ -330,6 +339,7 @@ class MemoryManager:
         new_name = self._sanitize_name(new_name)
         self._check_not_ignored(old_name)
         self._check_not_ignored(new_name)
+        self._check_write_access(old_name, is_tool_context)
         self._check_write_access(new_name, is_tool_context)
 
         old_path = self.get_memory_file_path(old_name)
@@ -351,7 +361,7 @@ class MemoryManager:
 
         Memories whose content does not contain a reference to ``old_name`` are left
         untouched (no spurious mtime changes). Memories that do are rewritten via
-        :meth:`save_memory`.
+        :meth:`save_memory`. Read-only memories are left unchanged in tool contexts.
 
         :param old_name: the current memory name (the source of the rename)
         :param new_name: the target memory name
@@ -362,7 +372,8 @@ class MemoryManager:
         renaming_message = self.move_memory(old_name, new_name, is_tool_context=is_tool_context)
 
         total_updates = 0
-        for memory_name in self.list_memories().get_full_list():
+        memories = self.list_memories()
+        for memory_name in memories.memories if is_tool_context else memories.get_full_list():
             content = self.load_memory(memory_name)
             updated_content, n_replacements = self.rename_references_to_memory(content, old_name, new_name)
             if n_replacements > 0:

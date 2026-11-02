@@ -41,18 +41,20 @@ class Project(ToStringMixin):
         project_config: ProjectConfig,
         serena_config: SerenaConfig,
         is_newly_created: bool = False,
+        is_transient: bool = False,
     ):
         assert serena_config is not None
         self.project_root = project_root
         self.project_config = project_config
         self.serena_config = serena_config
+        self._is_transient = is_transient
         self._serena_data_folder = serena_config.get_project_serena_folder(self.project_root)
         log.info("Serena project data folder: %s", self._serena_data_folder)
 
         read_only_memory_patterns = serena_config.read_only_memory_patterns + project_config.read_only_memory_patterns
         ignored_memory_patterns = serena_config.ignored_memory_patterns + project_config.ignored_memory_patterns
         self.memory_manager = MemoryManager(
-            self._serena_data_folder,
+            None if is_transient else self._serena_data_folder,
             read_only_memory_patterns=read_only_memory_patterns,
             ignored_memory_patterns=ignored_memory_patterns,
         )
@@ -73,7 +75,7 @@ class Project(ToStringMixin):
 
         # create .gitignore file in the project's Serena data folder if not yet present
         serena_data_gitignore_path = os.path.join(self._serena_data_folder, ".gitignore")
-        if not os.path.exists(serena_data_gitignore_path):
+        if not is_transient and not os.path.exists(serena_data_gitignore_path):
             os.makedirs(os.path.dirname(serena_data_gitignore_path), exist_ok=True)
             log.info(f"Creating .gitignore file in {serena_data_gitignore_path}")
             with open(serena_data_gitignore_path, "w", encoding="utf-8") as f:
@@ -161,6 +163,8 @@ class Project(ToStringMixin):
         """
         Saves the current project configuration to disk.
         """
+        if self._is_transient:
+            raise ValueError("No active project. Please activate a project before saving project configuration.")
         self.project_config.save(self.path_to_project_yml())
 
     def path_to_serena_data_folder(self) -> str:
@@ -367,6 +371,8 @@ class Project(ToStringMixin):
         :param require_not_ignored: if True, the path must not be ignored according to the project's ignore settings
         """
         if FileProxy.is_external_path(relative_path):
+            if self._is_transient:
+                raise ValueError("No active project. Encoded external paths require an active project.")
             return
 
         if not self.is_path_in_project(relative_path) and not self.serena_config.full_access_mode:
@@ -424,6 +430,8 @@ class Project(ToStringMixin):
         :param skip_ignored_files: whether to skip ignored files; has no effect if `code_files_only` is True
         :return:
         """
+        if code_files_only and self._is_transient:
+            raise ValueError("No active project. Searching only code files requires an active project.")
         if FileProxy.is_external_path(relative_path):
             # single external path: create appropriate proxy
             file_collection = FileCollection([FileProxy.from_project_relative_path(self, relative_path)])
@@ -640,6 +648,8 @@ class Project(ToStringMixin):
 
         :return: the language server manager, which is also stored in the project instance
         """
+        if self._is_transient:
+            raise ValueError("No active project. Language servers require an active project.")
         try:
             # ensure that the project configuration, particularly the list of languages is complete,
             # despite asynchronous first-time project configuration generation (which may not have completed yet)
