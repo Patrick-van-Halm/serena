@@ -56,6 +56,7 @@ class LanguageServerFactory:
             ignored_paths=self.ignored_patterns,
             trace_lsp_communication=self.trace_lsp_communication,
             encoding=self.encoding,
+            read_only=self.project_config.read_only,
         )
 
         log.info(f"Creating language server instance for {self.project_root}, language={ls_id}.")

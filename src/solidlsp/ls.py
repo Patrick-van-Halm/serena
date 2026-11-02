@@ -466,6 +466,11 @@ class SolidLanguageServer(ABC):
         return False
 
     @classmethod
+    def diagnostics_modify_project(cls) -> bool:
+        """Whether explicit diagnostics require a project build or refresh with write access."""
+        return False
+
+    @classmethod
     def ls_resources_dir(cls, solidlsp_settings: SolidLSPSettings, mkdir: bool = True) -> str:
         """
         Returns the directory where the language server resources are downloaded.

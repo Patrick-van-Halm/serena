@@ -546,6 +546,20 @@ Notes:
 - The language server package is a `.nupkg` file (ZIP format) downloaded from NuGet.org by default.
 - If you have .NET 10+ already installed, Serena will use your system installation.
 
+#### Unity (C# and Unity CLI)
+
+Set `language_servers: [unity]` in the project configuration to use Roslyn for C# symbols and
+the official Unity CLI for compilation diagnostics. Use `unity` as the C# server for these files;
+an earlier `csharp` entry would take precedence. The backend is opt-in and is not auto-detected.
+
+Configure `project_path` (default `"."`), `unity_cli_path` (default `"unity"`), and `timeout`
+(default `120` seconds) under `ls_specific_settings.unity`. The Unity folder can be nested inside
+the active Serena repository. Roslyn settings from `ls_specific_settings.csharp` carry over,
+with `unity` settings taking precedence, and the Roslyn installation is shared.
+
+See [Unity setup and examples](026_unity) for prerequisites, nested projects, ordinary diagnostics,
+and optional CLI tools for status, Console logs, and tests.
+
 #### C# (`OmniSharp`)
 
 Serena uses the `csharp_omnisharp` language key for OmniSharp.

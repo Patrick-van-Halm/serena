@@ -43,7 +43,8 @@ def _await_file(path: Path) -> None:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX shell quoting and process-group regression")
-def test_cancelled_shell_releases_serial_executor_and_stops_only_owned_tree(tmp_path: Path) -> None:
+@pytest.mark.parametrize("use_shell", [True, False], ids=["shell", "argv"])
+def test_cancelled_shell_releases_serial_executor_and_stops_only_owned_tree(tmp_path: Path, use_shell: bool) -> None:
     marker = tmp_path / "started.json"
     source = (
         "import json,os,subprocess,sys,time; from pathlib import Path; "
@@ -53,7 +54,8 @@ def test_cancelled_shell_releases_serial_executor_and_stops_only_owned_tree(tmp_
     unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
     executor = TaskExecutor("latency-test")
     call = ToolCall(20)
-    task = executor.issue_task(lambda: call.execute(lambda: execute_shell_command(_command(source), timeout=20)), logged=False)
+    command = _command(source) if use_shell else [sys.executable, "-c", source]
+    task = executor.issue_task(lambda: call.execute(lambda: execute_shell_command(command, timeout=20)), logged=False)
     try:
         _await_file(marker)
         call.cancel()

@@ -2,6 +2,7 @@
 Tests for the shell facade API.
 """
 
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -12,6 +13,7 @@ from serena.config.serena_config import SerenaConfig
 from serena.project import Project
 from serena.repl.api.shell_api import ShellApi
 from serena.repl.facade import ApiScope, Facade
+from serena.util.shell import execute_shell_command
 
 
 @pytest.fixture
@@ -64,3 +66,14 @@ def test_execute_shell_command_timeout_terminates_process(api: ShellApi) -> None
     command = f'"{sys.executable}" -c "import time; time.sleep(30)"'
     with pytest.raises(TimeoutError, match="timed out"):
         api.execute_shell_command(command)
+
+
+def test_argument_vector_keeps_shell_characters_literal(tmp_path: Path) -> None:
+    arguments = ["project with spaces", "$(echo expanded)", 'quote"; & | %PATH% *']
+    result = execute_shell_command(
+        [sys.executable, "-c", "import json, sys; print(json.dumps(sys.argv[1:]))", *arguments],
+        cwd=str(tmp_path),
+        capture_stderr=True,
+    )
+    assert result.return_code == 0, result.stderr
+    assert json.loads(result.stdout) == arguments

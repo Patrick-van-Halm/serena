@@ -50,6 +50,16 @@ class ExternalProjectExecution:
         if self._read_only and method.info.can_edit:
             raise PermissionError(f"Editing methods are not permitted in read-only external project execution: {method.qualified_name}")
 
+        # diagnostic refreshes can modify project state even when the shared facade is normally read-only
+        if (
+            self._read_only
+            and method.qualified_name in {"lsp.get_diagnostics_for_file", "lsp.get_diagnostics_for_symbol"}
+            and self._agent.get_active_project_or_raise().diagnostics_modify_project()
+        ):
+            raise PermissionError(
+                f"Diagnostics that refresh project state are not permitted in read-only external project execution: {method.qualified_name}"
+            )
+
     def call_remotely(self, facade_name: str, method_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
         """
         Executes the given facade method remotely via the project server.

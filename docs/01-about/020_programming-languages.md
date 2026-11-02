@@ -51,7 +51,9 @@ Some languages require additional installations or setup steps, as noted.
   (requires Java 21+ on PATH; uses [bsl-language-server](https://github.com/1c-syntax/bsl-language-server) by 1c-syntax; the JAR is auto-downloaded and SHA-256-verified for the bundled default version; supports `.bsl` and `.os` files; configure optional `ls_path` or `bsl_ls_version` under `ls_specific_settings.bsl`)
 * **C#**  
   (by default, uses the Roslyn language server (language `csharp`), requiring [.NET v10+](https://dotnet.microsoft.com/en-us/download/dotnet) and, on Windows, `pwsh` ([PowerShell 7+](https://learn.microsoft.com/en-us/powershell/scripting/install/install-powershell-on-windows?view=powershell-7.5));
-  set language to `csharp_omnisharp` to use OmiSharp instead)
+  set language to `csharp_omnisharp` to use OmiSharp instead;
+  for Unity projects, opt into `unity` for Roslyn symbols and compilation diagnostics from the official Unity CLI —
+  see [Unity setup](../02-usage/026_unity))
 * **C/C++**  
   (by default, uses the clangd language server (language `cpp`) but we also support ccls (language `cpp_ccls`);
   for best results, provide a `compile_commands.json` at the repository root;

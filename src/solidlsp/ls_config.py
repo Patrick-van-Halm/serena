@@ -246,6 +246,10 @@ class LanguageServerId(Enum):
     """OmniSharp language server for C# (instead of the default csharp-ls by microsoft).
     Currently has problems with finding references, and generally seems less stable and performant.
     """
+    UNITY = "unity"
+    """Roslyn C# language server with compilation diagnostics from the official Unity CLI.
+    Explicitly enabled for Unity projects instead of csharp.
+    """
     RUBY_SOLARGRAPH = "ruby_solargraph"
     """Solargraph language server for Ruby (legacy, experimental).
     Use Language.RUBY (ruby-lsp) for better performance and modern LSP features.
@@ -366,6 +370,7 @@ class LanguageServerId(Enum):
             self.PYTHON_PYREFLY,
             self.PYTHON_BASEDPYRIGHT,
             self.CSHARP_OMNISHARP,
+            self.UNITY,
             self.RUBY_SOLARGRAPH,
             self.PHP_PHPACTOR,
             self.PHP_PHPANTOM,
@@ -432,7 +437,7 @@ class LanguageServerId(Enum):
                         for base_pattern in ["ts", "js"]:
                             path_patterns.append(f".{prefix}{base_pattern}{postfix}")
                 return FilenameMatcher(*path_patterns)
-            case self.CSHARP | self.CSHARP_OMNISHARP:
+            case self.CSHARP | self.CSHARP_OMNISHARP | self.UNITY:
                 return FilenameMatcher(".cs")
             case self.RUST:
                 return FilenameMatcher(".rs")
@@ -710,6 +715,10 @@ class LanguageServerId(Enum):
                 from solidlsp.language_servers.omnisharp import OmniSharp
 
                 return OmniSharp
+            case self.UNITY:
+                from solidlsp.language_servers.unity_language_server import UnityLanguageServer
+
+                return UnityLanguageServer
             case self.TYPESCRIPT:
                 from solidlsp.language_servers.typescript_language_server import TypeScriptLanguageServer
 
@@ -1115,6 +1124,8 @@ class LanguageServerConfig:
     """
     encoding: str = "utf-8"
     """File encoding to use when reading source files"""
+    read_only: bool = False
+    """Whether the project is read-only; explicit build and refresh operations must honor this setting."""
 
     @classmethod
     def from_dict(cls, env: dict) -> Self:

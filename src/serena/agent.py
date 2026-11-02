@@ -55,6 +55,7 @@ from serena.repl.api.ext_api import ExternalProjectsApi
 from serena.repl.api.fs_api import FsApi
 from serena.repl.api.mem_api import MemoryApi
 from serena.repl.api.shell_api import ShellApi
+from serena.repl.api.unity_api import UnityApi
 from serena.repl.facade import ApiScope, Facade
 from serena.repl.repl import SerenaRepl
 from serena.session import SerenaSession, SessionRegistry
@@ -1446,6 +1447,7 @@ class SerenaAgent:
             Facade.from_api(EditApi(self), api_scope),
             Facade.from_api(MemoryApi(self), api_scope),
             Facade.from_api(ShellApi(self), api_scope),
+            Facade.from_api(UnityApi(self), api_scope, is_optional=True),
             Facade.from_api(ExternalProjectsApi(self), api_scope, is_optional=True),
         ]
 

@@ -707,7 +707,11 @@ class ProjectServer:
         agent = self._get_legacy_agent()
         with self._active_project_lock, agent.active_project_context(project):
             tool = agent.get_tool_by_name(req.tool_name)
-            if not tool.is_readonly():
+            if not tool.is_readonly() or (
+                req.tool_name
+                in {"get_diagnostics_for_file", "get_diagnostics_for_files", "get_diagnostics_for_symbol", "get_diagnostics_for_symbols"}
+                and project.diagnostics_modify_project()
+            ):
                 raise ValueError(f"Tool '{req.tool_name}' is not read-only and cannot be executed via the query_project route")
             params = json.loads(req.tool_params_json)
             return tool.apply_ex(**params)

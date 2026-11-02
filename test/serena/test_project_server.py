@@ -12,7 +12,8 @@ import pytest
 from flask import Flask
 from werkzeug.serving import make_server
 
-from serena.config.serena_config import SerenaConfig
+from serena.config.serena_config import LanguageBackend, ProjectConfig, SerenaConfig
+from serena.project import Project
 from serena.project_server import (
     MCPBridgeCloseRequest,
     MCPBridgeSessionRequest,
@@ -24,6 +25,7 @@ from serena.project_server import (
     QueryProjectRequest,
 )
 from serena.shared_mcp_calls import SharedMCPCalls
+from solidlsp.ls_config import LanguageServerId
 
 
 @pytest.fixture
@@ -205,6 +207,50 @@ def test_concurrent_lookups_load_each_project_only_once(project_server: ProjectS
 
     registration.get_project_instance.assert_called_once_with(serena_config)
     project.create_language_server_manager.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "tool_name,language_server,backend,denied",
+    [
+        ("get_diagnostics_for_file", LanguageServerId.UNITY, LanguageBackend.LSP, True),
+        ("get_diagnostics_for_files", LanguageServerId.UNITY, LanguageBackend.LSP, True),
+        ("get_diagnostics_for_symbol", LanguageServerId.UNITY, LanguageBackend.LSP, True),
+        ("get_diagnostics_for_symbols", LanguageServerId.UNITY, LanguageBackend.LSP, True),
+        ("get_diagnostics_for_files", LanguageServerId.CSHARP, LanguageBackend.LSP, False),
+        ("get_diagnostics_for_file", LanguageServerId.UNITY, LanguageBackend.JETBRAINS, False),
+        ("find_symbol", LanguageServerId.UNITY, LanguageBackend.LSP, False),
+    ],
+)
+def test_read_only_query_route_blocks_unity_diagnostic_refresh(
+    project_server: ProjectServer,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+    language_server: LanguageServerId,
+    backend: LanguageBackend,
+    denied: bool,
+) -> None:
+    # retain the real backend policy while replacing project loading and execution boundaries
+    project = Project(
+        project_root=str(tmp_path),
+        project_config=ProjectConfig(project_name="target", language_servers=[language_server], language_backend=backend),
+        serena_config=SerenaConfig(gui_log_window=False, web_dashboard=False),
+    )
+    monkeypatch.setattr(project_server, "_get_project", lambda name: project)
+    tool = MagicMock()
+    tool.is_readonly.return_value = True
+    tool.apply_ex.return_value = "query-result"
+    agent = cast(Any, project_server._agent)
+    agent.get_tool_by_name.return_value = tool
+    request = QueryProjectRequest(project_name="target", tool_name=tool_name, tool_params_json="{}")
+
+    # rejected calls cannot reach compilation; valid read queries still execute
+    if denied:
+        with pytest.raises(ValueError, match="not read-only"):
+            project_server._query_project(request)
+        tool.apply_ex.assert_not_called()
+    else:
+        assert project_server._query_project(request) == "query-result"
 
 
 def test_concurrent_queries_serialize_active_project_context(project_server: ProjectServer) -> None:
