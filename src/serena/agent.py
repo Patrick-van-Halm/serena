@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from logging import Logger
+from pathlib import Path
 from typing import TYPE_CHECKING, Optional, TypeVar, cast
 
 from sensai.util import logging
@@ -36,11 +37,12 @@ from serena.config.serena_config import (
     ModeSelectionDefinitionWithBaseModes,
     NamedApiInclusionDefinition,
     NamedToolInclusionDefinition,
+    ProjectConfig,
     RegisteredProject,
     SerenaConfig,
     SerenaPaths,
-    project_roots_equal,
     ToolInclusionDefinition,
+    project_roots_equal,
 )
 from serena.jetbrains import launch_coordinator as jetbrains_launch_coordinator
 from serena.ls_manager import LanguageServerManager
@@ -580,8 +582,8 @@ class SerenaAgent:
         memory_log_handler: MemoryLogHandler | None = None,
     ):
         """
-        :param project: the project to load immediately or None to not load any project; may be a path to the project or a name of
-            an already registered project;
+        :param project: a configured project path or registered name to activate; an unconfigured directory becomes
+            the filesystem root without activation. With None, filesystem operations use the startup working directory.
         :param project_activation_callback: a callback function to be called when a project is activated.
         :param project_activation_error: an initial error to report back to the client/LLM pertaining to project determination/activation
             in Serena's initial prompts. This is only applicable if `project` is None.
@@ -593,6 +595,8 @@ class SerenaAgent:
             if necessary.
         """
         self._active_project: Project | None = None  # NOTE: field name used in __del__
+        self._working_directory = str(Path.cwd().resolve())
+        self._file_system_project: Project | None = None
         self._project_activation_callback = project_activation_callback
         self._project_activation_error: str | None = project_activation_error
         self._gui_log_viewer: Optional["GuiLogViewer"] = None
@@ -611,10 +615,22 @@ class SerenaAgent:
         # propagate configuration to other components
         self.serena_config.propagate_settings()
 
-        # determine registered project to be activated (if any)
-        registered_project_to_activate: RegisteredProject | None = (
-            self.serena_config.get_registered_project(project, autoregister=True) if project is not None else None
-        )
+        # keep unconfigured directories usable without creating or registering a project
+        if project is not None and os.path.isdir(project):
+            self._working_directory = str(Path(project).resolve())
+            if not os.path.isfile(self.serena_config.get_project_yml_location(self._working_directory)):
+                log.info("No project configuration in %s; using it for filesystem and shell operations", self._working_directory)
+                project = None
+
+        # determine registered project to be activated, retaining filesystem access on invalid configuration
+        registered_project_to_activate: RegisteredProject | None = None
+        if project is not None:
+            try:
+                registered_project_to_activate = self.serena_config.get_registered_project(project, autoregister=True)
+            except Exception as e:
+                log.error(f"Error loading project '{project}' at startup: {e}", exc_info=e)
+                self._project_activation_error = str(e)
+                project = None
 
         # adjust log level
         serena_log_level = self.serena_config.log_level
@@ -675,9 +691,7 @@ class SerenaAgent:
         log.info("Available projects: {}".format(", ".join(self.serena_config.project_names)))
         log.info(f"Loaded tools ({len(self._all_tools)}): {', '.join([tool.get_name_from_cls() for tool in self._all_tools.values()])}")
         if self.serena_config.full_access_mode:
-            log.warning(
-                "FULL ACCESS MODE IS ENABLED: Serena filesystem APIs may access paths outside the active project root."
-            )
+            log.warning("FULL ACCESS MODE IS ENABLED: Serena filesystem APIs may access paths outside the active project root.")
 
         self._check_shell_settings()
 
@@ -1012,6 +1026,24 @@ class SerenaAgent:
             raise ValueError("No active project. Please activate a project first.")
         return project
 
+    def get_file_system_project(self) -> Project:
+        """Return the active project or a transient filesystem scope rooted at the startup working directory.
+
+        The transient scope reuses path, encoding and ignore policies without creating project files,
+        registering a project, or enabling language services.
+        """
+        project = self.get_active_project()
+        if project is not None:
+            return project
+        if self._file_system_project is None:
+            self._file_system_project = Project(
+                project_root=self._working_directory,
+                project_config=ProjectConfig(project_name=Path(self._working_directory).name, language_servers=[]),
+                serena_config=self.serena_config,
+                is_transient=True,
+            )
+        return self._file_system_project
+
     def get_active_modes(self) -> ActiveModes:
         """
         :return: the active modes
@@ -1223,8 +1255,14 @@ class SerenaAgent:
         # provide the project activation message if it hasn't yet been provided
         if self._active_project is not None and not self._project_prompt_status.is_project_activation_message_already_provided(session_id):
             system_prompt += "\n\n" + self._format_prompt_tag(self.get_project_activation_message(session_id), tag="active-project")
-        elif self._project_activation_error:
-            system_prompt += f"\n\nNo project is active ({self._project_activation_error})."
+        elif self._active_project is None:
+            system_prompt += (
+                f"\n\nNo project is active. Filesystem and shell operations use the working directory `{self._working_directory}`. "
+                "They do not require a Serena project or project configuration. "
+                "Language-aware operations require activating a project."
+            )
+            if self._project_activation_error:
+                system_prompt += f"\nProject activation was unavailable: {self._project_activation_error}"
 
         # Establish a Serena session and state its id. When a concrete MCP/bridge
         # conversation id was supplied, reuse it instead of allocating a second random
@@ -1647,6 +1685,7 @@ class SerenaAgent:
             result_str += f"Active project root: {self._active_project.project_root}\n"
         else:
             result_str += "No active project\n"
+            result_str += f"Working directory: {self._working_directory}\n"
         result_str += f"Agent interface: {self._agent_interface.value}\n"
         result_str += f"Language backend: {self._language_backend.value}"
         if self._active_project and self._active_project.project_config.language_backend is not None:
@@ -1660,10 +1699,7 @@ class SerenaAgent:
         for registered_project in self.serena_config.projects:
             selector = self.serena_config.get_project_selector(registered_project)
             root = str(registered_project.project_root)
-            is_active = (
-                self._active_project is not None
-                and registered_project.matches_root_path(self._active_project.project_root)
-            )
+            is_active = self._active_project is not None and registered_project.matches_root_path(self._active_project.project_root)
             project_lines.append(f"{selector} -> {root}" + (" [active]" if is_active else ""))
         result_str += "\n".join(project_lines) + "\n"
         result_str += f"Active context: {self._context.name}\n"

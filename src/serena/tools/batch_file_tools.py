@@ -6,7 +6,7 @@ from pydantic import ConfigDict, Field, StrictInt, with_config
 from typing_extensions import TypedDict
 
 from serena.agent_workflow.files import FileBatchReader, FileReadRequest
-from serena.tools.tools_base import Tool
+from serena.tools.tools_base import Tool, ToolMarkerDoesNotRequireActiveProject
 from serena.util.raw_file import RawFileContent
 from serena.util.tool_call import ToolCallContext
 
@@ -20,7 +20,7 @@ class FileReadInput(TypedDict):
     end_line: NotRequired[int | None]
 
 
-class ReadFilesTool(Tool):
+class ReadFilesTool(Tool, ToolMarkerDoesNotRequireActiveProject):
     """Read several known text files or line ranges in one bounded, read-only request."""
 
     def apply(
@@ -55,5 +55,5 @@ class ReadFilesTool(Tool):
             raise ValueError("read_files requires read_file to be enabled in the active context")
         requests = [FileReadRequest.model_validate(item) for item in files]
         context = ToolCallContext.current()
-        reader = FileBatchReader(self.project, context.call.check if context else None)
+        reader = FileBatchReader(self.file_system_project, context.call.check if context else None)
         return reader.read(requests, max_chars_per_file, max_total_chars, max_bytes_per_file)

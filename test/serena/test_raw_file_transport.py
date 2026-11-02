@@ -37,6 +37,7 @@ def raw_agent(tmp_path: Path) -> Any:
     agent.serena_config.tool_timeout = 2
     agent.get_active_project.return_value = project
     agent.get_active_project_or_raise.return_value = project
+    agent.get_file_system_project.return_value = project
     agent.get_context.return_value.tool_description_overrides = {}
     agent.get_active_tools.return_value.contains_tool_name.return_value = True
     agent.get_language_server_manager.return_value = None
@@ -169,15 +170,9 @@ def test_cross_project_forwarding_preserves_text_and_native_content(raw_agent: A
         assert result.content[0].text == original
 
 
-@pytest.mark.parametrize("blocked", ["inactive", "no-project"])
-def test_raw_tool_preserves_agent_access_checks(raw_agent: Any, blocked: str) -> None:
+def test_raw_tool_preserves_agent_access_checks(raw_agent: Any) -> None:
     from serena.tools import ToolCallError
 
-    if blocked == "inactive":
-        raw_agent.get_active_tools.return_value.contains_tool_name.return_value = False
-        expected = "is not active"
-    else:
-        raw_agent.get_active_project.return_value = None
-        expected = "No active project"
-    with pytest.raises(ToolCallError, match=expected):
+    raw_agent.get_active_tools.return_value.contains_tool_name.return_value = False
+    with pytest.raises(ToolCallError, match="is not active"):
         ReadFileRawTool(raw_agent).apply_ex(relative_path="image.png", catch_exceptions=False)

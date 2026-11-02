@@ -200,6 +200,7 @@ def test_cancellation_propagates_instead_of_becoming_a_file_error(batch_file_pro
 def test_tool_refuses_to_bypass_read_file_exclusion(batch_file_project: Project):
     agent = MagicMock()
     agent.get_active_project_or_raise.return_value = batch_file_project
+    agent.get_file_system_project.return_value = batch_file_project
     agent.is_tool_function_available.return_value = False
     with pytest.raises(ValueError, match="read_file to be enabled"):
         ReadFilesTool(agent).apply([{"relative_path": "missing"}])

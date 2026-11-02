@@ -5,7 +5,7 @@ Tools supporting the execution of (external) commands
 
 from typing import TYPE_CHECKING, cast
 
-from serena.tools import Tool, ToolMarkerCanEdit
+from serena.tools import Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActiveProject
 
 if TYPE_CHECKING:
     from serena.repl.api.shell_api import ShellApi
@@ -24,7 +24,7 @@ class ShellApiMixin:
         return ShellApi(tool.agent)
 
 
-class ExecuteShellCommandTool(Tool, ToolMarkerCanEdit, ShellApiMixin):
+class ExecuteShellCommandTool(Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActiveProject, ShellApiMixin):
     """
     Executes a shell command.
     """
@@ -44,7 +44,8 @@ class ExecuteShellCommandTool(Tool, ToolMarkerCanEdit, ShellApiMixin):
           * processes that require user interaction.
 
         :param command: the shell command to execute
-        :param cwd: the working directory to execute the command in. If None, the project root will be used.
+        :param cwd: working directory, absolute or relative to the project root (startup working directory without a project).
+            If None, use the project root or startup working directory.
         :param capture_stderr: whether to capture and return stderr output
         :param max_answer_chars: maximum response length; -1 uses the configured default.
             Oversized output is shortened to marked excerpts while retaining the exit status and working directory

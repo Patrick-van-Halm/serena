@@ -71,7 +71,7 @@ class RemoveProjectTool(Tool, ToolMarkerDoesNotRequireActiveProject, ToolMarkerO
         return f"Successfully removed project '{project_name}' from configuration."
 
 
-class GetCurrentConfigTool(Tool, ConfigApiMixin):
+class GetCurrentConfigTool(Tool, ToolMarkerDoesNotRequireActiveProject, ConfigApiMixin):
     """
     Prints the current configuration of the agent, including the active and available projects, tools, contexts, and modes.
     """

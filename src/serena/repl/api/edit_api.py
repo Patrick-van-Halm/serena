@@ -23,6 +23,7 @@ from ..representable import Renderer, RepresentableViaRenderer
 
 if TYPE_CHECKING:
     from serena.agent import SerenaAgent
+    from serena.code_editor import CodeEditor
 
 
 class ReplacementPreview(RepresentableViaRenderer):
@@ -82,6 +83,14 @@ class EditApi(FacadeApi):
             ],
         )
 
+    def _create_file_editor(self) -> "CodeEditor":
+        """Use local text editing without a project, preserving the configured backend for active projects."""
+        from serena.code_editor import LocalCodeEditor
+
+        if self._agent.get_active_project() is None:
+            return LocalCodeEditor(self._get_file_system_project())
+        return self._create_code_editor()
+
     # file-level operations
 
     @facade_method(can_edit=True, corresponding_tool=ReplaceContentTool)
@@ -116,8 +125,8 @@ class EditApi(FacadeApi):
             If false and multiple occurrences are found, an error will be raised
         :return: a success message
         """
-        self._get_project().validate_relative_path(relative_path)
-        with EditedFileContext(relative_path, self._create_code_editor()) as context:
+        self._get_file_system_project().validate_relative_path(relative_path)
+        with EditedFileContext(relative_path, self._create_file_editor()) as context:
             replacer = ContentReplacer(mode=mode, allow_multiple_occurrences=allow_multiple_occurrences)
             context.set_updated_content(replacer.replace(context.get_original_content(), needle, repl))
         return SUCCESS_RESULT
@@ -172,7 +181,7 @@ class EditApi(FacadeApi):
         :return: in a dry run, the prospective changes (`ReplacementPreview`); otherwise a summary of the applied replacements
         """
         replacement = MultiFileReplacement(
-            self._get_project(),
+            self._get_file_system_project(),
             needle,
             repl,
             mode,
@@ -196,7 +205,7 @@ class EditApi(FacadeApi):
                 message += "\n" + preview.represent()
             raise ValueError(message) from e
 
-        return replacement.apply(self._create_code_editor(), occurrences).to_display_string()
+        return replacement.apply(self._create_file_editor(), occurrences).to_display_string()
 
     # line-level operations
 
@@ -211,7 +220,7 @@ class EditApi(FacadeApi):
         :param end_line: the 0-based index of the last line to be deleted
         :return: a success message
         """
-        self._create_code_editor().delete_lines(relative_path, start_line, end_line)
+        self._create_file_editor().delete_lines(relative_path, start_line, end_line)
         return SUCCESS_RESULT
 
     @facade_method(optional=True, can_edit=True, corresponding_tool=ReplaceLinesTool)
@@ -226,7 +235,7 @@ class EditApi(FacadeApi):
         :param content: the content to insert
         :return: a success message
         """
-        code_editor = self._create_code_editor()
+        code_editor = self._create_file_editor()
         code_editor.delete_lines(relative_path, start_line, end_line)
         code_editor.insert_at_line(relative_path, start_line, self._normalize_inserted_content(content))
         return SUCCESS_RESULT
@@ -244,7 +253,7 @@ class EditApi(FacadeApi):
         :param content: the content to be inserted
         :return: a success message
         """
-        self._create_code_editor().insert_at_line(relative_path, line, self._normalize_inserted_content(content))
+        self._create_file_editor().insert_at_line(relative_path, line, self._normalize_inserted_content(content))
         return SUCCESS_RESULT
 
     @staticmethod

@@ -33,6 +33,7 @@ def test_png_bytes_are_native_image_content(raw_project: Project) -> None:
     path.write_bytes(PNG)
     agent = MagicMock()
     agent.get_active_project_or_raise.return_value = raw_project
+    agent.get_file_system_project.return_value = raw_project
     result = ReadFileRawTool(agent).apply("screenshot.bin")
 
     assert isinstance(result, CallToolResult)

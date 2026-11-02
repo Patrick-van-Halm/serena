@@ -20,6 +20,7 @@ def api(tmp_path: Path) -> ShellApi:
     project = Project.load(str(tmp_path), serena_config=SerenaConfig(gui_log_window=False, web_dashboard=False))
     agent = MagicMock()
     agent.get_active_project_or_raise.return_value = project
+    agent.get_file_system_project.return_value = project
     agent.serena_config.default_max_tool_answer_chars = 10000
     return ShellApi(agent)
 
@@ -56,7 +57,6 @@ def test_shell_absolute_cwd_remains_unrestricted(api: ShellApi, tmp_path: Path) 
 
     output = api.execute_shell_command(print_cwd, cwd=str(outside_dir))
     assert Path(output.stdout.strip()).resolve() == outside_dir.resolve()
-
 
 
 def test_execute_shell_command_timeout_terminates_process(api: ShellApi) -> None:
