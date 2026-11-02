@@ -14,11 +14,11 @@ excluded_tools:
   - delete_path
   - copy_path
   - move_path
-  - read_file
+  - read_files
   - execute_shell_command
-  - replace_content
+  - replace_contents
   - find_file
-  - list_dir
+  - list_dirs
 
 
 tool_description_overrides: {}

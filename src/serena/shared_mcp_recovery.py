@@ -71,8 +71,8 @@ class DaemonRecovery:
             "find_declaration",
             "find_implementations",
             "find_file",
-            "list_dir",
-            "read_file",
+            "list_dirs",
+            "read_files",
             "search_for_pattern",
         }
     )

@@ -39,8 +39,8 @@ from serena.config.serena_config import (
     RegisteredProject,
     SerenaConfig,
     SerenaPaths,
-    project_roots_equal,
     ToolInclusionDefinition,
+    project_roots_equal,
 )
 from serena.jetbrains import launch_coordinator as jetbrains_launch_coordinator
 from serena.ls_manager import LanguageServerManager
@@ -64,7 +64,7 @@ from serena.tools import (
     OnboardingTool,
     OpenDashboardTool,
     ReadMemoryTool,
-    ReplaceContentTool,
+    ReplaceContentsTool,
     SerenaReplTool,
     Tool,
     ToolMarker,
@@ -126,9 +126,14 @@ class ToolSet:
     Represents a set of tools by their names.
     """
 
-    LEGACY_TOOL_NAME_MAPPING = {"replace_regex": ReplaceContentTool.get_name_from_cls()}
+    LEGACY_TOOL_NAME_MAPPING = {
+        "replace_regex": ReplaceContentsTool.get_name_from_cls(),
+        "replace_content": ReplaceContentsTool.get_name_from_cls(),
+        "read_file": "read_files",
+        "list_dir": "list_dirs",
+    }
     """
-    maps legacy tool names to their new names for backward compatibility
+    maps legacy configuration names to current tools; obsolete MCP calls are not routed
     """
 
     def __init__(self, tool_names: set[str]) -> None:
@@ -675,9 +680,7 @@ class SerenaAgent:
         log.info("Available projects: {}".format(", ".join(self.serena_config.project_names)))
         log.info(f"Loaded tools ({len(self._all_tools)}): {', '.join([tool.get_name_from_cls() for tool in self._all_tools.values()])}")
         if self.serena_config.full_access_mode:
-            log.warning(
-                "FULL ACCESS MODE IS ENABLED: Serena filesystem APIs may access paths outside the active project root."
-            )
+            log.warning("FULL ACCESS MODE IS ENABLED: Serena filesystem APIs may access paths outside the active project root.")
 
         self._check_shell_settings()
 
@@ -1660,10 +1663,7 @@ class SerenaAgent:
         for registered_project in self.serena_config.projects:
             selector = self.serena_config.get_project_selector(registered_project)
             root = str(registered_project.project_root)
-            is_active = (
-                self._active_project is not None
-                and registered_project.matches_root_path(self._active_project.project_root)
-            )
+            is_active = self._active_project is not None and registered_project.matches_root_path(self._active_project.project_root)
             project_lines.append(f"{selector} -> {root}" + (" [active]" if is_active else ""))
         result_str += "\n".join(project_lines) + "\n"
         result_str += f"Active context: {self._context.name}\n"

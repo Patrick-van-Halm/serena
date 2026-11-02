@@ -38,5 +38,5 @@ existing file-read policy rather than discovery-time ignore filtering.
 
 Binary payloads are omitted from Serena's tool-result logs and usage-estimator
 input. Usage statistics record the metadata summary, not an image-token estimate.
-Prefer `read_file` for source code and other text. This addition is a classic MCP
+Prefer `read_files` for source code and other text, including one file. This addition is a classic MCP
 tool; it does not change the REPL interface's fixed tool set.

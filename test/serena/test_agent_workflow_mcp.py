@@ -21,20 +21,35 @@ isolated_project = _isolated_project
 
 
 @pytest.mark.parametrize("bridge", [False, True], ids=["server", "bridge"])
-@pytest.mark.parametrize("excluded", [False, True], ids=["enabled", "excluded"])
+@pytest.mark.parametrize("policy", ["enabled", "excluded_legacy", "excluded_bulk", "fixed_legacy", "read_only"])
 @pytest.mark.parametrize("mode", ["legacy", "auto"])
-def test_batch_transport_and_policy(isolated_project, bridge: bool, excluded: bool, mode: str):
+def test_batch_transport_and_policy(isolated_project, bridge: bool, policy: str, mode: str):
     fixture = isolated_project
+    excluded = policy.startswith("excluded")
+    editing_blocked = excluded or policy == "read_only"
     (fixture.project / "first").mkdir()
     (fixture.project / "second").mkdir()
     (fixture.project / "first/a.txt").write_text("a", encoding="utf-8")
     (fixture.project / "second/b.txt").write_text("b", encoding="utf-8")
     (fixture.project / "escaped.txt").write_text('"\\\t\n😀' * 2000, encoding="utf-8")
-    if excluded:
+    if excluded or policy == "fixed_legacy":
         context_path = fixture.home / "contexts/codex.yml"
         context = yaml.safe_load(context_path.read_text(encoding="utf-8"))
-        context["excluded_tools"] = ["list_dir", "replace_content", "read_file"]
+        if policy == "fixed_legacy":
+            context["fixed_tools"] = ["read_file", "list_dir", "replace_content", "initial_instructions", "read_file_raw"]
+        else:
+            context["excluded_tools"] = (
+                ["list_dir", "replace_content", "read_file"]
+                if policy == "excluded_legacy"
+                else ["list_dirs", "replace_contents", "read_files"]
+            )
         context_path.write_text(yaml.safe_dump(context), encoding="utf-8")
+
+    if policy == "read_only":
+        project_config_path = fixture.project / ".serena/project.yml"
+        project_config = yaml.safe_load(project_config_path.read_text(encoding="utf-8"))
+        project_config["read_only"] = True
+        project_config_path.write_text(yaml.safe_dump(project_config), encoding="utf-8")
 
     daemon = None
     with (fixture.home / "batch-daemon.log").open("w+", encoding="utf-8") as log:
@@ -75,14 +90,23 @@ def test_batch_transport_and_policy(isolated_project, bridge: bool, excluded: bo
                 with anyio.fail_after(45):
                     async with Client(parameters, mode=mode, read_timeout_seconds=20) as client:
                         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
-                        assert tools["list_dirs"].annotations.read_only_hint
-                        assert tools["read_files"].annotations.read_only_hint
+                        if policy == "fixed_legacy":
+                            assert set(tools) == {
+                                "read_files",
+                                "list_dirs",
+                                "replace_contents",
+                                "initial_instructions",
+                                "read_file_raw",
+                            } | ({"restart_daemon"} if bridge else set())
+                        if not excluded:
+                            assert tools["list_dirs"].annotations.read_only_hint
+                            assert tools["read_files"].annotations.read_only_hint
                         batch = await client.call_tool(
                             "read_files",
                             {"files": [{"relative_path": "first/a.txt"}, {"relative_path": "missing"}, {"relative_path": "second/b.txt"}]},
                         )
                         if excluded:
-                            assert batch.is_error and "read_file to be enabled" in text_of(batch)
+                            assert batch.is_error
                         else:
                             assert not batch.is_error, text_of(batch)
                             batch_rows = json.loads(text_of(batch))["results"]
@@ -107,13 +131,14 @@ def test_batch_transport_and_policy(isolated_project, bridge: bool, excluded: bo
                             )
                             assert not oversized.is_error, text_of(oversized)
                             assert "max_bytes" in json.loads(text_of(oversized))["results"][0]["error"]
-                        assert not tools["replace_contents"].annotations.read_only_hint
+                        if not editing_blocked:
+                            assert not tools["replace_contents"].annotations.read_only_hint
                         result = await client.call_tool(
                             "list_dirs",
                             {"directories": [{"relative_path": "first"}, {"relative_path": "missing"}, {"relative_path": "second"}]},
                         )
                         if excluded:
-                            assert result.is_error and "list_dir to be enabled" in text_of(result)
+                            assert result.is_error
                         else:
                             assert not result.is_error, text_of(result)
                             rows = json.loads(text_of(result))["results"]
@@ -127,8 +152,8 @@ def test_batch_transport_and_policy(isolated_project, bridge: bool, excluded: bo
                             {"relative_path": "second/b.txt", "needle": "(b)", "repl": "$!1$!1", "mode": "regex"},
                         ]
                         preview = await client.call_tool("replace_contents", {"replacements": edits, "dry_run": True})
-                        if excluded:
-                            assert preview.is_error and "replace_content to be enabled" in text_of(preview)
+                        if editing_blocked:
+                            assert preview.is_error
                         else:
                             assert not preview.is_error, text_of(preview)
                             assert (fixture.project / "first/a.txt").read_text() == "a"
@@ -145,11 +170,35 @@ def test_batch_transport_and_policy(isolated_project, bridge: bool, excluded: bo
                             assert not applied.is_error, text_of(applied)
                             assert (fixture.project / "first/a.txt").read_text() == "final"
                             assert (fixture.project / "second/b.txt").read_text() == "bb"
+                        if not excluded:
+                            single_listing = await client.call_tool("list_dirs", {"directories": [{"relative_path": "first"}]})
+                            assert not single_listing.is_error, text_of(single_listing)
+                            assert json.loads(text_of(single_listing))["results"][0]["files"] == ["first/a.txt"]
+                        if not editing_blocked:
+                            single_edit = await client.call_tool(
+                                "replace_contents",
+                                {
+                                    "replacements": [
+                                        {
+                                            "relative_path": "hello.txt",
+                                            "needle": "works",
+                                            "repl": "works singly",
+                                            "mode": "literal",
+                                            "expected_count": 1,
+                                        }
+                                    ]
+                                },
+                            )
+                            assert not single_edit.is_error, text_of(single_edit)
+                            assert (fixture.project / "hello.txt").read_text() == "SDK migration works singly\n"
+                        if policy == "read_only":
+                            assert (fixture.project / "first/a.txt").read_text() == "a"
+                            assert (fixture.project / "second/b.txt").read_text() == "b"
                         if excluded:
                             following = await client.call_tool("initial_instructions", {})
                             assert not following.is_error, text_of(following)
                         else:
-                            following = await client.call_tool("read_file", {"relative_path": "hello.txt"})
+                            following = await client.call_tool("read_files", {"files": [{"relative_path": "hello.txt"}]})
                             assert not following.is_error and "SDK migration works" in text_of(following)
 
             anyio.run(exercise)

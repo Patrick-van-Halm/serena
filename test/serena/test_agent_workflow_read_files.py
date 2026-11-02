@@ -197,10 +197,12 @@ def test_cancellation_propagates_instead_of_becoming_a_file_error(batch_file_pro
         FileBatchReader(batch_file_project, cancel).read([FileReadRequest(relative_path="missing")])
 
 
-def test_tool_refuses_to_bypass_read_file_exclusion(batch_file_project: Project):
+def test_single_file_uses_the_batch_interface(batch_file_project: Project):
     agent = MagicMock()
     agent.get_active_project_or_raise.return_value = batch_file_project
-    agent.is_tool_function_available.return_value = False
-    with pytest.raises(ValueError, match="read_file to be enabled"):
-        ReadFilesTool(agent).apply([{"relative_path": "missing"}])
-    assert ReadFilesTool(agent).is_readonly()
+    path = Path(batch_file_project.project_root) / "single.txt"
+    path.write_text("one\ntwo\n", encoding="utf-8")
+    rows = json.loads(ReadFilesTool(agent).apply([{"relative_path": "single.txt", "start_line": 1, "end_line": 1}]))["results"]
+    assert len(rows) == 1
+    assert rows[0]["content"] == "two"
+    assert rows[0]["error"] is None

@@ -215,7 +215,7 @@ def test_stdio_cancellation_allows_next_read(isolated_project, bridge: bool) -> 
                         scope.cancel()
                     with anyio.fail_after(4):
                         for _ in range(80):
-                            result = await client.call_tool("read_file", {"relative_path": "hello.txt"})
+                            result = await client.call_tool("read_files", {"files": [{"relative_path": "hello.txt"}]})
                             if not result.is_error:
                                 break
                             # the daemon refuses new work while cleanup still owns the execution guard

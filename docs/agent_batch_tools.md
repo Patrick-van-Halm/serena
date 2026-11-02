@@ -2,7 +2,8 @@
 
 Serena provides `read_files`, `list_dirs`, and `replace_contents`. These are classic MCP tools, available through direct Serena
 servers and the shared bridge after updating and restarting their processes.
-They do not replace the existing single-operation tools. The broader agent-workflow
+They replace the single-item MCP tools `read_file`, `list_dir`, and `replace_content`.
+Use a one-item array when only one file, directory, or replacement is needed. The broader agent-workflow
 proposal is not yet fully implemented; this release contains these three batch tools.
 
 ## Multiple text-file reads
@@ -32,15 +33,15 @@ or limits reject the call before any files are opened.
 `start_line` defaults to zero; a negative start counts from the end. `end_line`
 is inclusive, nonnegative, and defaults to null (the rest of the file). Text uses
 the project's configured encoding and normalizes CRLF and CR to LF, matching
-`read_file`. NUL-containing decoded text is rejected; use `read_file_raw` for
+the internal text reader. NUL-containing decoded text is rejected; use `read_file_raw` for
 images and other binary files. Encoded JetBrains external-file identifiers are
-not local files and are unsupported; use `read_file` for those identifiers.
+not local files and are unsupported; the REPL retains `s.fs.read_file` for those identifiers.
 
 The implementation reuses the existing bounded regular-file reader, including
 its path/symlink validation, opened-file identity checks and size bounds. The
 whole file is read before selecting lines. This permits complete-file hashes
 and limits memory use, but means the byte limit applies even to a short range.
-Use the existing streaming `read_file` for targeted ranges in large files.
+The internal/REPL `s.fs.read_file` still supports streaming ranges; the MCP batch tool retains its byte cap.
 `max_bytes_per_file` defaults to 5 MiB and is capped at 20 MiB. No truncated byte
 sequence is decoded. Reads do not constitute a multi-file filesystem snapshot.
 
@@ -58,7 +59,7 @@ fits `max_total_chars` (2048..200000); this does not include the outer MCP envel
 `max_chars_per_file` accepts 1..200000 decoded characters. Budgets too small for
 all request metadata are rejected rather than silently dropping records.
 
-`read_file` must remain enabled in the active context. The REPL's fixed toolset is
+`read_files` is governed by its own active tool policy. The REPL's fixed toolset and per-item APIs are
 unchanged. Direct MCP and the shared bridge use the same JSON-compatible request
 schema. Runtime fingerprints cover this implementation; the shared protocol
 remains version 7. Update and restart the bridges and daemon together while idle.
@@ -91,8 +92,7 @@ response is limited to 2048..200000 characters. Limits do not promise a wall-clo
 bound on blocked filesystem operations. Partial listings do not establish absence
 of unreturned files, and listings are not filesystem snapshots.
 
-`list_dir` must remain enabled in the active context. A composite tool does not
-bypass the exclusion of its underlying operation.
+`list_dirs` is governed by its own active tool policy.
 
 ## Different replacements across files
 
@@ -152,7 +152,7 @@ per-file outcome metadata is never silently discarded. A response allowance too
 small for that metadata rejects preflight. Regex checks between matches do not
 provide a hard CPU timeout inside a pathological Python regex evaluation.
 
-The `replace_content` tool must be enabled, and the project must allow edits,
+The `replace_contents` tool must be enabled, and the project must allow edits,
 including for dry runs. Configured language backends retain their existing editor
 path. LSP projects explicitly configured with no language servers use Serena's
 existing text reader and atomic single-file writer, respecting project encoding
@@ -168,3 +168,20 @@ the installed SDK in legacy and modern modes. The integration fixture explicitly
 has no language servers configured. Native Zed/WSL and real configured LSP or
 JetBrains editing sessions are separate validation targets; passing these tests
 must not be described as exercising those environments.
+
+## Migration from single-item MCP calls
+
+Use `read_files({"files": [{"relative_path": "README.md"}]})`,
+`list_dirs({"directories": [{"relative_path": "."}]})`, and
+`replace_contents({"replacements": [{"relative_path": "config.txt", "needle": "old", "repl": "new", "mode": "literal"}]})`.
+These examples show tool names followed by their JSON argument objects.
+
+Legacy names in `excluded_tools`, `included_optional_tools`, or `fixed_tools`
+map to the bulk replacements, including the older `replace_regex` name.
+Excluding an old name therefore still excludes its replacement. This configuration
+migration does not preserve old tool-call endpoints or scalar argument schemas.
+Update custom tool descriptions and client allowlists to the bulk names, then
+restart all bridges/servers and refresh the client's tool catalog.
+
+The per-item Python/REPL facade methods remain available for programmatic use.
+`read_file_raw`, symbolic tools, and `replace_in_files` are unchanged.

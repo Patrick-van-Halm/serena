@@ -17,6 +17,7 @@ from serena.config.context_mode import SerenaAgentContext
 from serena.config.serena_config import AgentInterface, ProjectConfig, RegisteredProject, SerenaConfig
 from serena.lsp.lsp_diagnostics import DiagnosticsContext
 from serena.project import Project
+from serena.repl.api.edit_api import EditApi
 from serena.tools import (
     SUCCESS_RESULT,
     ActivateProjectTool,
@@ -26,7 +27,6 @@ from serena.tools import (
     FindSymbolTool,
     GetDiagnosticsForFileTool,
     InitialInstructionsTool,
-    ReplaceContentTool,
     ReplaceInFilesTool,
     ReplaceSymbolBodyTool,
     SafeDeleteSymbol,
@@ -1192,8 +1192,8 @@ class TestSerenaAgent:
         """
         relative_path = "ws_manager.js"
         with project_file_modification_context(serena_agent, relative_path):
-            replace_content_tool = serena_agent.get_tool(ReplaceContentTool)
-            result = replace_content_tool.apply(
+            replace_content_tool = EditApi(serena_agent)
+            result = replace_content_tool.replace_content(
                 needle=r'catch \(error\) \{\s*console.error\("Failed to connect.*?\}',
                 repl='catch(error) {console.log("Never mind"); }',
                 relative_path=relative_path,
@@ -1217,9 +1217,9 @@ class TestSerenaAgent:
         relative_path = "ws_manager.js"
         needle = r'console.log("WebSocketManager initializing\nStatus OK");'
         repl = r'console.log("WebSocketManager initialized\nAll systems go!");'
-        replace_content_tool = serena_agent.get_tool(ReplaceContentTool)
+        replace_content_tool = EditApi(serena_agent)
         with project_file_modification_context(serena_agent, relative_path):
-            result = replace_content_tool.apply(
+            result = replace_content_tool.replace_content(
                 needle=re.escape(needle) if mode == "regex" else needle,
                 repl=repl,
                 relative_path=relative_path,
@@ -1283,37 +1283,6 @@ class TestSerenaAgent:
     @pytest.mark.parametrize(
         "serena_agent",
         [
-            pytest.param(LanguageServerId.PYTHON, marks=get_pytest_markers(LanguageServerId.PYTHON), id="python_services"),
-            pytest.param(LanguageServerId.PYTHON_TY, marks=get_pytest_markers(LanguageServerId.PYTHON_TY), id="python_ty_services"),
-        ],
-        indirect=["serena_agent"],
-    )
-    def test_replace_content_reports_new_diagnostics(self, serena_agent: SerenaAgent):
-        """Tests that file-level edits report newly introduced diagnostics."""
-        relative_path = os.path.join("test_repo", "services.py")
-        replace_content_tool = serena_agent.get_tool(ReplaceContentTool)
-        try:
-            replace_content_tool.ENABLE_DIAGNOSTICS = True
-
-            with project_file_modification_context(serena_agent, relative_path):
-                result = replace_content_tool.apply(
-                    relative_path=relative_path,
-                    needle="return container",
-                    repl="return missing_container",
-                    mode="literal",
-                )
-
-            diagnostics = parse_edit_diagnostics_result(result)
-            relative_path_result = diagnostics[relative_path]
-            diagnostic_messages = json.dumps(relative_path_result)
-            assert "missing_container" in diagnostic_messages
-            assert "create_service_container" in diagnostic_messages
-        finally:
-            replace_content_tool.ENABLE_DIAGNOSTICS = False
-
-    @pytest.mark.parametrize(
-        "serena_agent",
-        [
             pytest.param(LanguageServerId.PYTHON, marks=get_pytest_markers(LanguageServerId.PYTHON), id="python_container_body"),
             pytest.param(LanguageServerId.PYTHON_TY, marks=get_pytest_markers(LanguageServerId.PYTHON_TY), id="python_ty_container_body"),
         ],
@@ -1358,9 +1327,9 @@ class TestSerenaAgent:
         Tests that an ambiguous replacement where there is a larger match that internally contains
         a smaller match triggers an exception
         """
-        replace_content_tool = serena_agent.get_tool(ReplaceContentTool)
+        replace_content_tool = EditApi(serena_agent)
         with pytest.raises(ValueError, match="ambiguous"):
-            replace_content_tool.apply(
+            replace_content_tool.replace_content(
                 needle=r'catch \(error\) \{.*?this\.updateConnectionStatus\("Connection failed", false\);.*?\}',
                 repl='catch(error) {console.log("Never mind"); }',
                 relative_path="ws_manager.js",

@@ -16,7 +16,7 @@ excluded_tools:
   - delete_path
   - copy_path
   - move_path
-  - read_file
+  - read_files
   - execute_shell_command
 
 tool_description_overrides: {}

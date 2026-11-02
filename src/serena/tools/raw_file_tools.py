@@ -15,7 +15,7 @@ class ReadFileRawTool(Tool):
         Read a regular file as bytes, without text decoding or image transformations.
         PNG, JPEG, GIF, and WebP are returned as MCP image blocks; all other files are
         embedded binary resources. Display and model support depend on the MCP client.
-        Prefer read_file for source code and other text. Oversized files fail, never truncate.
+        Prefer read_files for source code and other text, including a single file. Oversized files fail, never truncate.
 
         :param relative_path: file path relative to the active project; paths or symlinks
             resolving outside it require the host-global full_access_mode setting.
