@@ -47,6 +47,27 @@ precedence. Both backends share the Roslyn installation. As with other
 [language-server settings](050_configuration#language-server-specific-settings), project settings
 are applied only to trusted projects; settings can also be supplied globally.
 
+Newly generated global configurations have `trusted_project_path_patterns: []`, so they
+ignore the project-level `ls_specific_settings` block until the project is trusted. Add the
+**outer Serena repository root** to that list in your global `serena_config.yml`:
+
+```yaml
+trusted_project_path_patterns:
+  - '/workspace/repo'
+  # Windows example: 'C:/Projects/MyRepository'
+```
+
+Use the exact root without a trailing `/**`; trust is checked against the active repository
+root, not the nested Unity directory. Alternatively, put the Unity `ls_specific_settings`
+block in the global configuration, where it does not require project trust.
+
+After changing either configuration file, restart the Serena process or shared daemon
+(`serena restart` for a shared daemon). The `restart_language_server` tool and reactivating
+the same project reuse already-loaded configuration; they do not reload the YAML.
+If Unity reports `Not a Unity project` for the outer root despite a configured nested
+`project_path`, check project trust, configuration reloads, and any `project.local.yml`
+override. A local `ls_specific_settings` block replaces the whole block from `project.yml`.
+
 No optional Unity tools or APIs need to be enabled for ordinary diagnostics. Call
 `get_diagnostics_for_files` (or `s.lsp.get_diagnostics_for_file` in the REPL) as usual. Each explicit
 diagnostic request invokes `unity recompile` for a fresh result, filters it to the requested file

@@ -12,8 +12,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from serena.config.serena_config import ProjectConfig, SerenaConfig, SerenaPaths
-from serena.ls_manager import LanguageServerFactory
+from serena.config.serena_config import SerenaConfig, SerenaPaths
+from serena.ls_manager import LanguageServerManagerInitialisationError
+from serena.project import Project
 from serena.util import unity_cli
 from serena.util.shell import ShellCommandResult
 from solidlsp.ls import SolidLanguageServer
@@ -24,15 +25,21 @@ from solidlsp.ls_exceptions import SolidLSPException
 class _ProjectOptions:
     read_only: bool = False
     cli_available: bool = True
+    trusted: bool = True
+    global_settings: bool = False
 
 
 @dataclass
 class _UnityWorkspace:
     root: Path
     unity_root: Path
-    server: SolidLanguageServer
+    project: Project
     roslyn: Mock
     cli: Mock
+
+    @property
+    def server(self) -> SolidLanguageServer:
+        return self.project.ensure_language_server_manager().get_language_server(self.relative_source)
 
     @property
     def source_path(self) -> Path:
@@ -68,6 +75,18 @@ def unity_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: py
     (unity_root / "Assembly-CSharp.csproj").touch()
     (unity_root / "Library" / "PackageCache").mkdir(parents=True)
     (unity_root / "Library" / "PackageCache" / "Cached.csproj").touch()
+    unity_settings = {
+        "project_path": f"./{unity_root.name}",
+        "unity_cli_path": sys.executable if options.cli_available else str(tmp_path / "missing-unity-cli"),
+        "timeout": 17,
+    }
+    project_settings = unity_settings
+    if options.global_settings:
+        project_settings = {
+            "project_path": "./UntrustedProject",
+            "unity_cli_path": str(tmp_path / "untrusted-unity-cli"),
+            "timeout": 1,
+        }
     (root / ".serena").mkdir()
     (root / ".serena" / "project.yml").write_text(
         json.dumps(
@@ -75,19 +94,19 @@ def unity_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: py
                 "project_name": "unity-backend-test",
                 "language_servers": ["unity"],
                 "read_only": options.read_only,
-                "ls_specific_settings": {
-                    "unity": {
-                        "project_path": unity_root.name,
-                        "unity_cli_path": sys.executable if options.cli_available else str(tmp_path / "missing-unity-cli"),
-                        "timeout": 17,
-                    }
-                },
+                "ls_specific_settings": {"unity": project_settings},
             }
         ),
         encoding="utf-8",
     )
     monkeypatch.setattr(SerenaPaths(), "serena_user_home_dir", str(tmp_path / "serena-home"))
-    config = ProjectConfig.load(root, serena_config=SerenaConfig(gui_log_window=False, web_dashboard=False))
+    serena_config = SerenaConfig.from_config_file()
+    serena_config.language_server_idle_timeout_seconds = 0
+    if options.trusted:
+        serena_config.trusted_project_path_patterns = [str(root)]
+    if options.global_settings:
+        serena_config.ls_specific_settings = {"unity": unity_settings}
+    project = Project.load(root, serena_config=serena_config)
 
     # supply only the external server's readiness and document-symbol responses
     roslyn = Mock()
@@ -119,23 +138,18 @@ def unity_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: py
     cli = Mock()
     monkeypatch.setattr(unity_cli, "execute_shell_command", cli)
 
-    # exercise config loading and registry selection through the production factory
-    server = LanguageServerFactory(
-        project_root=str(root),
-        project_config=config,
-        project_data_path=str(root / ".serena"),
-        encoding="utf-8",
-        ignored_patterns=[],
-        ls_specific_settings=config.ls_specific_settings,
-    ).create_language_server(config.language_servers[0])
-    workspace = _UnityWorkspace(root, unity_root, server, roslyn, cli)
+    # exercise normal project startup, including trust filtering and global settings
+    workspace = _UnityWorkspace(root, unity_root, project, roslyn, cli)
     cli.return_value = workspace.command_result({"success": True, "data": {"failed": False, "errors": [], "warnings": []}})
-    with server.start_server_context():
+    try:
         yield workspace
+    finally:
+        project.shutdown()
 
 
 def test_nested_unity_navigation_opens_only_its_generated_projects_without_recompiling(unity_workspace: _UnityWorkspace) -> None:
     workspace = unity_workspace
+    server = workspace.server
     notifications = workspace.roslyn.notify.send_notification.call_args_list
     assert [notification.args[1] for notification in notifications if notification.args[0] == "solution/open"] == [
         {"solution": (workspace.unity_root / "Game.sln").as_uri()}
@@ -146,12 +160,43 @@ def test_nested_unity_navigation_opens_only_its_generated_projects_without_recom
     workspace_folders = workspace.roslyn.send.initialize.call_args.args[0]["workspaceFolders"]
     assert [folder["uri"] for folder in workspace_folders] == [workspace.unity_root.as_uri()]
 
-    symbols = list(workspace.server.request_document_symbols(workspace.relative_source).iter_symbols())
+    symbols = list(server.request_document_symbols(workspace.relative_source).iter_symbols())
     assert [(symbol["name"], symbol["location"]["relativePath"]) for symbol in symbols] == [("Player", workspace.relative_source)]
     with workspace.server.open_file(workspace.relative_source) as source:
         workspace.server.insert_text_at_position(workspace.relative_source, 0, 0, "// edited\n")
         assert source.contents.startswith("// edited\npublic class Player")
     workspace.cli.assert_not_called()
+
+
+@pytest.mark.parametrize("unity_workspace", [_ProjectOptions(trusted=False)], indirect=True)
+def test_untrusted_nested_unity_reports_ignored_project_settings(unity_workspace: _UnityWorkspace) -> None:
+    workspace = unity_workspace
+
+    with pytest.raises(LanguageServerManagerInitialisationError) as error:
+        workspace.project.ensure_language_server_manager()
+
+    message = str(error.value)
+    assert f"Not a Unity project: {workspace.root}." in message
+    assert "ls_specific_settings" in message
+    assert "not trusted" in message
+    assert "trusted_project_path_patterns" in message
+    assert str(workspace.project.serena_config.config_file_path) in message
+    assert "trusted_project_path_patterns" in workspace.project.get_language_server_manager_status()
+    workspace.roslyn.send.initialize.assert_not_called()
+    workspace.cli.assert_not_called()
+
+
+@pytest.mark.parametrize("unity_workspace", [_ProjectOptions(trusted=False, global_settings=True)], indirect=True)
+def test_untrusted_nested_unity_uses_global_settings_instead_of_project_overrides(unity_workspace: _UnityWorkspace) -> None:
+    workspace = unity_workspace
+
+    assert workspace.server.request_text_document_diagnostics(workspace.relative_source) == []
+
+    command = workspace.cli.call_args.args[0]
+    assert command[0] == sys.executable
+    assert command[command.index("--project-path") + 1] == str(workspace.unity_root)
+    assert command[command.index("--timeout") + 1] == "17"
+    assert workspace.cli.call_args.kwargs["cwd"] == str(workspace.unity_root)
 
 
 def test_unity_cache_exclusions_keep_user_code_in_same_named_asset_folders(unity_workspace: _UnityWorkspace) -> None:

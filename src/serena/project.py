@@ -19,7 +19,7 @@ from serena.config.serena_config import (
     ProjectConfigAutoGenerationMode,
     SerenaConfig,
 )
-from serena.ls_manager import LanguageServerFactory, LanguageServerManager
+from serena.ls_manager import LanguageServerFactory, LanguageServerManager, LanguageServerManagerInitialisationError
 from serena.memories.memory_manager import MemoryManager
 from serena.util.file_proxy import FileCollection, FileProxy
 from serena.util.file_system import GitignoreParser, match_path, scan_directory
@@ -679,14 +679,19 @@ class Project(ToStringMixin):
             log.info(f"Creating language server manager for {self.project_root}")
             self._language_server_manager_init_error = None
             ls_specific_settings = dict(self.serena_config.ls_specific_settings)
+            ignored_settings_warning: str | None = None
             if self.project_config.ls_specific_settings:
                 if self.is_trusted():
                     ls_specific_settings.update(self.project_config.ls_specific_settings)
                 else:
-                    log.warning(
-                        f"Project path {self.project_root} is not trusted, ignoring LS-specific settings from project configuration. "
-                        "To trust the project, modify the trusted path patterns in the global configuration."
+                    global_config_path = self.serena_config.config_file_path or "the global serena_config.yml"
+                    ignored_settings_warning = (
+                        f"Project-level ls_specific_settings were ignored because project root {self.project_root} is not trusted. "
+                        f"Add this exact root to trusted_project_path_patterns in {global_config_path}, "
+                        "or configure ls_specific_settings globally. Restart the Serena process or shared daemon "
+                        "after changing configuration."
                     )
+                    log.warning(ignored_settings_warning)
             factory = LanguageServerFactory(
                 project_root=self.project_root,
                 project_config=self.project_config,
@@ -697,7 +702,13 @@ class Project(ToStringMixin):
                 ls_specific_settings=ls_specific_settings,
                 trace_lsp_communication=self.serena_config.trace_lsp_communication,
             )
-            self.language_server_manager = LanguageServerManager.from_languages(self.project_config.language_servers, factory, self)
+            # retain configuration context when default or global settings cannot start the backend
+            try:
+                self.language_server_manager = LanguageServerManager.from_languages(self.project_config.language_servers, factory, self)
+            except LanguageServerManagerInitialisationError as error:
+                if ignored_settings_warning is None:
+                    raise
+                raise LanguageServerManagerInitialisationError(f"{error}\n\n{ignored_settings_warning}") from error
             return self.language_server_manager
         except Exception as e:
             self._language_server_manager_init_error = e
