@@ -40,6 +40,15 @@ prompts:
     Line numbers returned by Serena's tools are 0-based!
 
     Request planning:
+    {% if 'read_files' in available_tools and 'read_file' not in available_tools %}
+    Use `{{ tool_names['read_files'] }}` for text reads, including one file: pass a one-item `files` array.
+    {% endif %}
+    {% if 'list_dirs' in available_tools and 'list_dir' not in available_tools %}
+    Use `{{ tool_names['list_dirs'] }}` for directory listings, including one directory: pass a one-item `directories` array.
+    {% endif %}
+    {% if 'replace_contents' in available_tools and 'replace_content' not in available_tools %}
+    Use `{{ tool_names['replace_contents'] }}` for targeted text replacements, including one change: pass a one-item `replacements` array.
+    {% endif %}
     After reading applicable instructions, including scoped AGENTS.md files, request small batches of
     already-known, independent reads together rather than requesting each separately. Do not guess paths
     or inputs to make a batch. Calls sharing a Serena project runtime execute serially, so large batches
@@ -103,7 +112,7 @@ prompts:
     Find declarations / implementations     find_declaration / _find_implementations
     Edit a symbol's body                    replace_symbol_body
     Insert near a symbol                    insert_before_symbol / _insert_after_symbol
-    Pattern replace inside a file           replace_content
+    Pattern replace in one or more files    replace_contents
     Rename / move / delete a symbol         rename / _move / _safe_delete
     Inline a symbol                         inline_symbol
     Type hierarchy                          type_hierarchy
@@ -126,7 +135,7 @@ prompts:
     2. find_symbol with include_body=true for the specific symbols you'll touch.
        Read only the symbols you need — not the whole file.
     3. Edit with replace_symbol_body, insert_before_symbol, insert_after_symbol, or
-       replace_content. Never use the built-in Edit on a code file when one of these
+       replace_contents (a one-item replacements array for one edit). Never use the built-in Edit on a code file when one of these
        fits.
 
     ## Self-check

@@ -16,9 +16,9 @@ from serena.tools import (
     CreateTextFileTool,
     DeletePathTool,
     FindFileTool,
-    ListDirTool,
+    ListDirsTool,
     MovePathTool,
-    ReadFileTool,
+    ReadFilesTool,
     SearchForPatternTool,
 )
 from serena.util.file_proxy import FileProxy
@@ -146,19 +146,16 @@ class PatternMatchesRenderer(Renderer[PatternMatches]):
 
         def render_first_lines(truncate: bool) -> str:
             compact = {
-                path: [
-                    {"line": match.matched_lines[0].line_number, "text": first_line_text(match, truncate)}
-                    for match in matches
-                ]
+                path: [{"line": match.matched_lines[0].line_number, "text": first_line_text(match, truncate)} for match in matches]
                 for path, matches in matches_by_file.items()
             }
             if truncate:
                 header = (
                     f"Matched lines (text over {self._TEXT_TRUNCATE} chars is truncated, marked with a trailing '...'); "
-                    "use read_file with the line numbers for full content:"
+                    "retrieve the listed line ranges for full content:"
                 )
             else:
-                header = "Matched lines per file; use read_file with the line numbers for surrounding context:"
+                header = "Matched lines per file; retrieve the listed line ranges for surrounding context:"
             return f"{header}\n{self._to_json(compact)}"
 
         def make_line_numbers_only() -> str:
@@ -175,11 +172,7 @@ class PatternMatchesRenderer(Renderer[PatternMatches]):
         # Build shortening candidates only when their raw payload can plausibly fit. This avoids
         # allocating an intermediate that is known in advance to be much larger than the answer.
         shortened_factories: list[Callable[[], str]] = []
-        first_lines_lower_bound = sum(
-            len(match.matched_lines[0].line_content)
-            for matches in matches_by_file.values()
-            for match in matches
-        )
+        first_lines_lower_bound = sum(len(match.matched_lines[0].line_content) for matches in matches_by_file.values() for match in matches)
         if first_lines_lower_bound <= max_answer_chars:
             shortened_factories.append(lambda: render_first_lines(truncate=False))
 
@@ -194,9 +187,7 @@ class PatternMatchesRenderer(Renderer[PatternMatches]):
             shortened_factories.append(lambda: render_first_lines(truncate=True))
 
         line_number_estimate = sum(
-            len(str(match.matched_lines[0].line_number)) + 2
-            for matches in matches_by_file.values()
-            for match in matches
+            len(str(match.matched_lines[0].line_number)) + 2 for matches in matches_by_file.values() for match in matches
         )
         if line_number_estimate <= max_answer_chars:
             shortened_factories.append(make_line_numbers_only)
@@ -294,7 +285,7 @@ class FsApi(FacadeApi):
             self._remove_path(destination, recursive=True)
         destination.parent.mkdir(parents=True, exist_ok=True)
 
-    @facade_method(corresponding_tool=ReadFileTool)
+    @facade_method(corresponding_tool=ReadFilesTool)
     def read_file(self, relative_path: str, start_line: int = 0, end_line: int | None = None, max_answer_chars: int = -1) -> FileContent:
         """
         Reads the given file or a range of its lines.
@@ -351,7 +342,7 @@ class FsApi(FacadeApi):
         :param recursive: whether a non-empty directory may be deleted recursively
         :return: a message indicating what was deleted
         """
-        project = self._get_project()
+        self._get_project()
         path = self._resolve_fs_path(relative_path)
         if self._is_project_root(path):
             raise ValueError("Refusing to delete the active project root.")
@@ -375,7 +366,7 @@ class FsApi(FacadeApi):
         :param overwrite: whether an existing destination may be replaced
         :return: a message indicating success
         """
-        project = self._get_project()
+        self._get_project()
         source = self._resolve_fs_path(source_path)
         destination = self._resolve_fs_path(destination_path)
         if not self._path_exists(source):
@@ -405,7 +396,7 @@ class FsApi(FacadeApi):
         :param overwrite: whether an existing destination may be replaced
         :return: a message indicating success
         """
-        project = self._get_project()
+        self._get_project()
         source = self._resolve_fs_path(source_path)
         if self._is_project_root(source):
             raise ValueError("Refusing to move the active project root.")
@@ -419,7 +410,7 @@ class FsApi(FacadeApi):
         self._mark_file_system_dirty_if_project_path(source_path, destination_path)
         return f"Moved path: {source_path} -> {destination_path}."
 
-    @facade_method(corresponding_tool=ListDirTool)
+    @facade_method(corresponding_tool=ListDirsTool)
     def list_dir(
         self, relative_path: str, recursive: bool, skip_ignored_files: bool = False, max_answer_chars: int = -1
     ) -> DirectoryListing:

@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -6,17 +7,17 @@ import pytest
 from serena.config.serena_config import SerenaConfig
 from serena.constants import DEFAULT_SOURCE_FILE_ENCODING
 from serena.project import Project
-from serena.tools import ReadFileTool
+from serena.tools import ReadFilesTool
 from solidlsp.ls_utils import TextUtils
 
 
 @pytest.fixture
-def read_file_tool(tmp_path: Path) -> ReadFileTool:
+def read_files_tool(tmp_path: Path) -> ReadFilesTool:
     project = Project.load(str(tmp_path), serena_config=SerenaConfig(gui_log_window=False, web_dashboard=False))
     agent = MagicMock()
     agent.get_active_project_or_raise.return_value = project
     agent.serena_config.default_max_tool_answer_chars = 10000
-    return ReadFileTool(agent)
+    return ReadFilesTool(agent)
 
 
 def _deleted_by_delete_lines(content: str, line: int) -> str:
@@ -29,10 +30,10 @@ def _deleted_by_delete_lines(content: str, line: int) -> str:
     return deleted_text
 
 
-class TestReadFileToolLineNumbering:
+class TestReadFilesToolLineNumbering:
     """
-    `delete_lines`/`replace_lines` require the same range of lines to have been read via `read_file`
-    beforehand, so the line indices reported by `read_file` must be the ones the editing tools apply to.
+    `delete_lines`/`replace_lines` require the same range of lines to have been read via `read_files`
+    beforehand, so the line indices reported by `read_files` must be the ones the editing tools apply to.
     """
 
     @pytest.mark.parametrize(
@@ -51,25 +52,34 @@ class TestReadFileToolLineNumbering:
             "line0\n\u2028line1\nline2\n",
         ],
     )
-    def test_read_file_lines_match_lines_targeted_by_delete_lines(self, read_file_tool: ReadFileTool, tmp_path: Path, content: str) -> None:
+    def test_read_file_lines_match_lines_targeted_by_delete_lines(
+        self, read_files_tool: ReadFilesTool, tmp_path: Path, content: str
+    ) -> None:
         (tmp_path / "file.txt").write_text(content, newline="", encoding=DEFAULT_SOURCE_FILE_ENCODING)
 
         for line in range(len(TextUtils.split_lines(content.rstrip("\n")))):
-            read_line = read_file_tool.apply("file.txt", start_line=line, end_line=line)
+            read_line = json.loads(read_files_tool.apply([{"relative_path": "file.txt", "start_line": line, "end_line": line}]))["results"][
+                0
+            ]["content"]
             assert read_line == _deleted_by_delete_lines(content, line).rstrip("\r\n")
 
-    def test_form_feed_does_not_shift_reported_line_indices(self, read_file_tool: ReadFileTool, tmp_path: Path) -> None:
+    def test_form_feed_does_not_shift_reported_line_indices(self, read_files_tool: ReadFilesTool, tmp_path: Path) -> None:
         # a form feed is a page-break convention within a line, not a line break
         (tmp_path / "file.txt").write_text("line0\n\x0cline1\nline2\n", newline="", encoding=DEFAULT_SOURCE_FILE_ENCODING)
 
-        assert read_file_tool.apply("file.txt") == "line0\n\x0cline1\nline2\n"
-        assert read_file_tool.apply("file.txt", start_line=1, end_line=1) == "\x0cline1"
+        assert json.loads(read_files_tool.apply([{"relative_path": "file.txt"}]))["results"][0]["content"] == "line0\n\x0cline1\nline2\n"
+        assert (
+            json.loads(read_files_tool.apply([{"relative_path": "file.txt", "start_line": 1, "end_line": 1}]))["results"][0]["content"]
+            == "\x0cline1"
+        )
 
     @pytest.mark.parametrize(
         "content",
         ["", "line0", "line0\n", "line0\nline1", "line0\nline1\n", "line0\n\n", "\n", "line0\r\nline1\r\n", "line0\rline1\r"],
     )
-    def test_read_full_file_recovers_rejoined_lines(self, read_file_tool: ReadFileTool, tmp_path: Path, content: str) -> None:
+    def test_read_full_file_recovers_rejoined_lines(self, read_files_tool: ReadFilesTool, tmp_path: Path, content: str) -> None:
         (tmp_path / "file.txt").write_text(content, newline="", encoding=DEFAULT_SOURCE_FILE_ENCODING)
 
-        assert read_file_tool.apply("file.txt") == "\n".join(TextUtils.split_lines(content))
+        assert json.loads(read_files_tool.apply([{"relative_path": "file.txt"}]))["results"][0]["content"] == "\n".join(
+            TextUtils.split_lines(content)
+        )

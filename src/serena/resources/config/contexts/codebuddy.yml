@@ -25,7 +25,7 @@ prompt: |
                       is inappropriate (e.g. a few lines of code).
   - Glob (by name) -> Allowed for discovery only.
   - Grep (content) -> Allowed for discovery only; follow up reads or reference searches must be Serena.
-  - Edit           -> FORBIDDEN. Use replace_symbol_body / insert_*_symbol / replace_content.
+  - Edit           -> FORBIDDEN. Use replace_symbol_body / insert_*_symbol / replace_contents.
   
   Disallowed reasoning. Do NOT use any of the following to justify Read/Edit on a code file:
     - "I already know the path"
@@ -38,10 +38,10 @@ excluded_tools:
   - delete_path
   - copy_path
   - move_path
-  - read_file
+  - read_files
   - execute_shell_command
   - find_file
-  - list_dir
+  - list_dirs
   - search_for_pattern
 
 tool_description_overrides: {}

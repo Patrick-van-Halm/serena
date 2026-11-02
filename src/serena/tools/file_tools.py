@@ -42,26 +42,6 @@ class FsApiMixin:
         return FsApi(tool.agent)
 
 
-class ReadFileTool(Tool, FsApiMixin):
-    """
-    Reads a file within the project directory, or outside it when full_access_mode is enabled.
-    """
-
-    def apply(self, relative_path: str, start_line: int = 0, end_line: int | None = None, max_answer_chars: int = -1) -> str:
-        """
-        Reads the given file or a chunk of it.
-
-        :param relative_path: path to the file to read; outside-project paths require full_access_mode
-        :param start_line: the 0-based index of the first line to be retrieved, negative values count from the end of the file.
-        :param end_line: the 0-based index of the last line to be retrieved (inclusive). If None, read until the end of the file.
-        :param max_answer_chars: if the file (chunk) is longer than this number of characters,
-            no content will be returned. Don't adjust unless there is really no other way to get the content
-            required for the task.
-        :return: the full text of the file at the given relative path
-        """
-        return self._api().read_file(relative_path, start_line, end_line, max_answer_chars).represent()
-
-
 class CreateTextFileTool(EditingToolWithDiagnostics, FsApiMixin):
     """
     Creates/overwrites a file in the project directory, or outside it when full_access_mode is enabled.
@@ -77,29 +57,6 @@ class CreateTextFileTool(EditingToolWithDiagnostics, FsApiMixin):
         """
         with self.diagnostics_context(relative_path) as diagnostics_context:
             return diagnostics_context.format_result(self._api().create_text_file(relative_path, content))
-
-
-class ListDirTool(Tool, FsApiMixin):
-    """
-    Lists files and directories in the given directory (optionally with recursion).
-    """
-
-    def apply(self, relative_path: str, recursive: bool, skip_ignored_files: bool = False, max_answer_chars: int = -1) -> str:
-        """
-        Lists files and directories in the given directory (optionally with recursion).
-
-        :param relative_path: directory to list; outside-project paths require full_access_mode; pass "." for the project root
-        :param recursive: whether to scan subdirectories recursively
-        :param skip_ignored_files: whether to skip files and directories that are ignored
-        :param max_answer_chars: if the output is longer than this number of characters,
-            no content will be returned. -1 means the default value from the config will be used.
-            Don't adjust unless there is really no other way to get the content required for the task.
-        :return: a JSON object with the names of directories and files within the given directory
-        """
-        try:
-            return self._api().list_dir(relative_path, recursive, skip_ignored_files, max_answer_chars).represent()
-        except FileNotFoundError as e:
-            return self._to_json({"error": str(e), "project_root": self.get_project_root()})
 
 
 class FindFileTool(Tool, FsApiMixin):
@@ -167,47 +124,6 @@ class MovePathTool(Tool, ToolMarkerCanEdit, FsApiMixin):
         :return: a success message
         """
         return self._api().move_path(source_path, destination_path, overwrite)
-
-
-class ReplaceContentTool(EditingToolWithDiagnostics, EditApiMixin):
-    """
-    Replaces content in a file (optionally using regular expressions).
-    """
-
-    def apply(
-        self,
-        relative_path: str,
-        needle: str,
-        repl: str,
-        mode: Literal["literal", "regex"],
-        allow_multiple_occurrences: bool = False,
-    ) -> str:
-        r"""
-        Replaces one or more occurrences of a given pattern in a file with new content.
-
-        VERY IMPORTANT: The "regex" mode allows very large sections of code to be replaced WITHOUT
-        quoting them fully: use a needle of the form "beginning.*?end-of-text-to-be-replaced" with
-        wildcards instead of pasting the exact original text — shorter, cheaper, and you cannot make
-        mistakes, because an ambiguous match returns an error you can refine, so wildcards are safe.
-        Prefer regex mode with suitable wildcards for long multi-line replacements; use the
-        symbol-level editors when replacing a whole method/class.
-
-        :param relative_path: the relative path to the file
-        :param needle: the string or regex pattern to search for.
-            If `mode` is "literal", this string will be matched exactly.
-            If `mode` is "regex", this string will be treated as a regular expression (syntax of Python's `re` module,
-            with flags DOTALL and MULTILINE enabled).
-        :param repl: the replacement string (verbatim).
-            If mode is "regex", the string can contain backreferences to matched groups in the needle regex,
-            specified using the syntax $!1, $!2, etc. for groups 1, 2, etc.
-        :param mode: either "literal" or "regex", specifying how the `needle` parameter is to be interpreted.
-        :param allow_multiple_occurrences: whether to allow matching and replacing multiple occurrences.
-            If false and multiple occurrences are found, an error will be returned
-        """
-        with self.diagnostics_context(relative_path) as diagnostics_context:
-            return diagnostics_context.format_result(
-                self._api().replace_content(relative_path, needle, repl, mode, allow_multiple_occurrences=allow_multiple_occurrences)
-            )
 
 
 class ReplaceInFilesTool(EditingToolWithDiagnostics, EditApiMixin):
@@ -300,7 +216,7 @@ class DeleteLinesTool(EditingToolWithDiagnostics, ToolMarkerOptional, EditApiMix
     ) -> str:
         """
         Deletes the given lines in the file.
-        Requires that the same range of lines was previously read using the `read_file` tool to verify correctness
+        Requires that the same range of lines was previously read using `read_files` to verify correctness
         of the operation.
 
         :param relative_path: the relative path to the file
@@ -325,7 +241,7 @@ class ReplaceLinesTool(EditingToolWithDiagnostics, ToolMarkerOptional, EditApiMi
     ) -> str:
         """
         Replaces the given range of lines in the given file.
-        Requires that the same range of lines was previously read using the `read_file` tool to verify correctness
+        Requires that the same range of lines was previously read using `read_files` to verify correctness
         of the operation.
 
         :param relative_path: the relative path to the file

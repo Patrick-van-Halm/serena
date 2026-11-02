@@ -11,7 +11,7 @@ from serena.tools import (
     InsertAfterSymbolTool,
     InsertAtLineTool,
     InsertBeforeSymbolTool,
-    ReplaceContentTool,
+    ReplaceContentsTool,
     ReplaceInFilesTool,
     ReplaceLinesTool,
     ReplaceSymbolBodyTool,
@@ -84,7 +84,7 @@ class EditApi(FacadeApi):
 
     # file-level operations
 
-    @facade_method(can_edit=True, corresponding_tool=ReplaceContentTool)
+    @facade_method(can_edit=True, corresponding_tool=ReplaceContentsTool)
     def replace_content(
         self,
         relative_path: str,

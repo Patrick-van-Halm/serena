@@ -24,18 +24,19 @@ prompt: |
   The `{{ tool_names['find_referencing_symbols'] }}` tool will give you code snippets around the references as well as symbolic information.
   These edits are reliable: once a tool returns without error the change is applied, so you do not need to re-read the file just to confirm it.
 
-  {% if 'replace_content' in available_tools %}
+  {% if 'replace_contents' in available_tools %}
   **File-based editing**
-  The `{{ tool_names['replace_content'] }}` tool allows you to perform regex-based replacements within files (as well as simple string replacements).
-  This is your primary tool for editing code whenever replacing or deleting a whole symbol would be a more expensive operation,
-  e.g. if you need to adjust just a few lines of code within a method.
-  In `regex` mode, wildcards like `start.*?end` let you match a span without quoting its full text; an ambiguous match
-  returns an error you can refine, so a tight wildcard pattern is both cheaper and safe.
-  For several small edits within one file, prefer a batch of targeted `{{ tool_names['replace_content'] }}` calls over rewriting the whole
-  file: rewriting has to re-emit the file's entire contents, whereas each targeted edit emits only the changed text.
-  {% if 'replace_in_files' in available_tools %}For the SAME edit across many files, use `{{ tool_names['replace_in_files'] }}`, which applies
-  it everywhere in one call — equally safe and transparent: its `dry_run` mode first previews every change as a diff with a
-  per-occurrence id, so you can then apply all of them or just a chosen subset.{% endif %}
+  Use `{{ tool_names['replace_contents'] }}` for targeted literal or regex replacements instead of rewriting a whole file.
+  {% if 'replace_content' not in available_tools %}
+  Pass a `replacements` array, including a one-item array for a single change. Several different replacements
+  across known files belong in one call. Entries for the same file are evaluated in input order.
+  Use `dry_run` to review changes and `expected_content_sha256` to guard the original text.
+  All entries are validated before writing, but multi-file writes are not atomic. Check per-file outcomes
+  and verify state before retrying an interrupted or partially applied batch.
+  {% endif %}
+  In regex mode, use a sufficiently specific pattern; ambiguous matches are rejected.
+  {% if 'replace_in_files' in available_tools %}For the SAME replacement across discovered files,
+  use `{{ tool_names['replace_in_files'] }}` with a dry-run preview and optional occurrence selection.{% endif %}
   {% endif %}
 excluded_tools:
  - replace_lines
