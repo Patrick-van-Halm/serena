@@ -50,15 +50,15 @@ class _ShellProcessWaiter:
 
 
 def execute_shell_command(
-    command: str,
+    command: str | list[str],
     cwd: str | None = None,
     capture_stderr: bool = False,
     timeout: float | None = None,
 ) -> ShellCommandResult:
     """
-    Execute a shell command and return the output.
+    Execute a shell command or an argument vector and return the output.
 
-    :param command: the command to execute
+    :param command: a shell command string, or an argument vector executed directly without a shell
     :param cwd: the working directory; None uses the current working directory
     :param capture_stderr: whether to capture standard error
     :param timeout: maximum execution time; an active tool deadline or cancellation may interrupt sooner
@@ -80,7 +80,7 @@ def execute_shell_command(
 
     process = subprocess.Popen(
         command,
-        shell=True,
+        shell=isinstance(command, str),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE if capture_stderr else None,
