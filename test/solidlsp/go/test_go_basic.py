@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -194,7 +195,7 @@ class TestGoBuildTags:
         fixture_path = get_repo_path(LanguageServerId.GO)
         target_path = tmp_path / "test_repo"
 
-        shutil.copytree(fixture_path, target_path)
+        shutil.copytree(fixture_path, target_path, ignore=shutil.ignore_patterns(".serena"))
         return target_path
 
     def test_default_context_contains_xnotfoo(self, tmp_path: Path) -> None:
@@ -237,10 +238,8 @@ class TestGoBuildTags:
             assert len(xfoo_matches) > 0, "Foo context should contain XFoo"
             assert len(xnotfoo_matches) == 0, "Foo context should NOT contain XNotFoo"
 
-    def test_disk_cache_is_invalidated_on_build_context_switch(self, tmp_path: Path) -> None:
+    def test_disk_cache_is_invalidated_on_build_context_switch(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Go build context switches must not reuse persisted SolidLSP document-symbol caches."""
-        import pickle
-
         from test.conftest import start_ls_context
 
         repo_path = self._copy_go_fixture(tmp_path)
@@ -255,85 +254,34 @@ class TestGoBuildTags:
 
         main_go = os.path.join("main.go")
 
-        def _assert_caches_loaded_and_clean(ls: SolidLanguageServer) -> None:
-            # White-box assertions: SolidLanguageServer currently has no public API to verify that
-            # caches were loaded from disk vs created lazily on first request.
-            assert ls._raw_document_symbols_cache, "Expected raw document-symbol cache to load from disk"
-            assert ls._document_symbols_cache, "Expected document-symbol cache to load from disk"
-            assert not ls._raw_document_symbols_cache_is_modified
-            assert not ls._document_symbols_cache_is_modified
-
-        def _assert_caches_empty(ls: SolidLanguageServer) -> None:
-            assert ls._raw_document_symbols_cache == {}
-            assert ls._document_symbols_cache == {}
-
-        def _assert_caches_modified(ls: SolidLanguageServer) -> None:
-            assert ls._raw_document_symbols_cache_is_modified
-            assert ls._document_symbols_cache_is_modified
-
-        # Run 1 (default context): populate caches and persist them to disk.
+        # populate the default context's symbols and persist them to disk
         with start_ls_context(LanguageServerId.GO, repo_path=str(repo_path), solidlsp_dir=tmp_path) as ls_default:
-            _ = ls_default.request_document_symbols(main_go)
-
-            default_raw_cache_version = ls_default._raw_document_symbols_cache_version()
-            default_doc_cache_version = ls_default._document_symbols_cache_version()
+            symbols = ls_default.request_document_symbols(main_go)
+            assert {"main", "Helper"} <= {symbol["name"] for symbol in symbols.iter_symbols()}
 
             ls_default.save_cache()
-            cache_dir = ls_default.cache_dir
+            assert any(path.is_file() for path in ls_default.cache_dir.rglob("*")), "Expected persisted symbol cache artifacts"
 
-            cache_files = [p for p in cache_dir.rglob("*") if p.is_file()]
-            assert cache_files, f"Expected SolidLSP to create cache artifacts under {cache_dir}"
-
-            versioned_cache_files: list[tuple[Path, object]] = []
-            for p in cache_files:
-                try:
-                    with p.open("rb") as f:
-                        data = pickle.load(f)
-                except Exception:
-                    continue
-                if isinstance(data, dict) and "__cache_version" in data:
-                    versioned_cache_files.append((p, data["__cache_version"]))
-
-            assert versioned_cache_files, f"Expected at least one SolidLSP cache file with a __cache_version under {cache_dir}"
-            saved_versions = {v for _, v in versioned_cache_files}
-            assert default_raw_cache_version in saved_versions or default_doc_cache_version in saved_versions, (
-                "Expected at least one persisted cache to match the default-context cache version"
-            )
-
-        # Run 2 (default context again): prove that persisted caches are actually loaded and used.
+        # reuse persisted symbols without asking gopls to parse the unchanged file again
         with start_ls_context(LanguageServerId.GO, repo_path=str(repo_path), solidlsp_dir=tmp_path) as ls_default_again:
-            assert ls_default_again.cache_dir == cache_dir
+            document_symbol = Mock(wraps=ls_default_again.server.send.document_symbol)
+            monkeypatch.setattr(ls_default_again.server.send, "document_symbol", document_symbol)
+            symbols = ls_default_again.request_document_symbols(main_go)
+            assert {"main", "Helper"} <= {symbol["name"] for symbol in symbols.iter_symbols()}
+            document_symbol.assert_not_called()
 
-            _assert_caches_loaded_and_clean(ls_default_again)
-
-            _ = ls_default_again.request_document_symbols(main_go)
-
-            # A cache hit should not mark caches as modified.
-            assert not ls_default_again._raw_document_symbols_cache_is_modified
-            assert not ls_default_again._document_symbols_cache_is_modified
-
-        # Run 3 (foo context): the same on-disk cache directory exists, but MUST be treated as stale.
+        # changed build tags must obtain fresh symbols despite unchanged source contents
         with start_ls_context(
             LanguageServerId.GO,
             repo_path=str(repo_path),
             ls_specific_settings=ls_settings_foo,
             solidlsp_dir=tmp_path,
         ) as ls_foo:
-            assert ls_foo.cache_dir == cache_dir
-
-            foo_raw_cache_version = ls_foo._raw_document_symbols_cache_version()
-            foo_doc_cache_version = ls_foo._document_symbols_cache_version()
-
-            assert foo_raw_cache_version != default_raw_cache_version
-            assert foo_doc_cache_version != default_doc_cache_version
-
-            # Different build context => persisted caches must not be loaded.
-            _assert_caches_empty(ls_foo)
-
-            _ = ls_foo.request_document_symbols(main_go)
-
-            # A cache miss should repopulate and mark caches modified.
-            _assert_caches_modified(ls_foo)
+            document_symbol = Mock(wraps=ls_foo.server.send.document_symbol)
+            monkeypatch.setattr(ls_foo.server.send, "document_symbol", document_symbol)
+            symbols = ls_foo.request_document_symbols(main_go)
+            assert {"main", "Helper"} <= {symbol["name"] for symbol in symbols.iter_symbols()}
+            assert document_symbol.called, "Changed build tags must refresh persisted symbols from the language server"
 
     @pytest.mark.parametrize("language_server", [LanguageServerId.GO], indirect=True)
     def test_bare_symbol_names(self, language_server) -> None:

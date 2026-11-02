@@ -24,7 +24,6 @@ def test_lru_eviction_disposes_namespace() -> None:
     assert first.repl_namespace == {}
 
 
-
 def test_explicit_system_prompt_session_is_reused_and_released() -> None:
     from unittest.mock import MagicMock
 

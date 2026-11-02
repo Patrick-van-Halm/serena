@@ -2,8 +2,8 @@
 
 import gc
 import threading
-import weakref
 import time
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
@@ -92,9 +92,7 @@ async def test_blocking_tool_leaves_event_loop_responsive() -> None:
     async with anyio.create_task_group() as group:
         group.start_soon(invoke)
         try:
-            with anyio.fail_after(1):
-                while not entered.is_set():
-                    await anyio.sleep(0.001)
+            assert await anyio.to_thread.run_sync(entered.wait, 1)
             # this coroutine must run while the blocking operation is still waiting
             assert results == []
         finally:
@@ -128,9 +126,7 @@ async def test_host_cancellation_is_delivered_while_worker_is_blocked() -> None:
     try:
         async with anyio.create_task_group() as group:
             group.start_soon(invoke)
-            with anyio.fail_after(1):
-                while not entered.is_set():
-                    await anyio.sleep(0.001)
+            assert await anyio.to_thread.run_sync(entered.wait, 1)
             group.cancel_scope.cancel()
         assert delivered.is_set()
         assert len(received) == 2 and received[0] == received[1]

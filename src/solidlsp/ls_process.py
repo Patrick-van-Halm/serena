@@ -15,7 +15,6 @@ from typing import IO, Any, AnyStr
 from sensai.util.string import ToStringMixin
 
 from serena.util.tool_call import ToolCallContext
-
 from solidlsp.ls_config import LanguageServerIdLike
 from solidlsp.ls_exceptions import SolidLSPException
 from solidlsp.ls_request import LanguageServerRequest

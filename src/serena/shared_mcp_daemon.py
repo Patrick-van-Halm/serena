@@ -172,9 +172,7 @@ class SharedMCPDaemon:
     def _startup_lock(self, deadline: float) -> Iterator[None]:
         # use the same endpoint lock for startup and explicit restart
         if not self._endpoint.is_loopback:
-            raise ProjectServerEndpointError(
-                f"Daemon startup/restart requires a loopback endpoint: {self._endpoint.base_url}"
-            )
+            raise ProjectServerEndpointError(f"Daemon startup/restart requires a loopback endpoint: {self._endpoint.base_url}")
         self._home.mkdir(parents=True, exist_ok=True)
         lock = FileLock(str(self._endpoint.startup_lock_path(self._home)), timeout=self._remaining(deadline))
         try:
@@ -286,8 +284,13 @@ class SharedMCPDaemon:
                         last_error = error
                         time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
                     else:
-                        # a manually started compatible daemon may have won the bind race
-                        if client.pid != process.pid:
+                        # Windows venv redirectors run the interpreter as a child of the launched process
+                        owned_pids = {process.pid}
+                        if owned_process is not None and client.pid != process.pid:
+                            owned_pids.update(child.pid for child in owned_process.children(recursive=True) if child.is_running())
+
+                        # clean up our attempt only when an independent daemon won the bind race
+                        if client.pid not in owned_pids:
                             self._stop_owned_child(process, owned_process)
                         log.info("Shared Serena daemon ready at %s; startup log: %s", self._endpoint.base_url, log_path)
                         return client
@@ -341,25 +344,34 @@ class SharedMCPDaemon:
             return command[2] == "start-project-server"
         return len(command) >= 4 and command[1:4] == ["-c", cls._BOOTSTRAP, "start-project-server"]
 
+    @classmethod
+    def _is_owned_daemon(cls, process: psutil.Process) -> bool:
+        # qualify only another process with the current user and exact Serena entrypoint
+        if process.pid == os.getpid():
+            return False
+        if os.name == "posix":
+            same_user = process.uids().real == os.getuid()
+        else:
+            same_user = process.username() == psutil.Process().username()
+        return same_user and cls._is_daemon_command(process.cmdline())
+
+    def _is_endpoint_listener(self, process: psutil.Process) -> bool:
+        return any(
+            connection.status == psutil.CONN_LISTEN
+            and connection.laddr
+            and self._endpoint.matches_listener(connection.laddr.ip, connection.laddr.port)
+            for connection in process.net_connections(kind="tcp")
+        )
+
     def _owned_listener(self, pid: int) -> psutil.Process:
         # verify user, identity, and listening socket before permitting a destructive action
         if pid == os.getpid():
             raise ProjectServerEndpointError("Refusing to replace the current process")
         try:
             process = psutil.Process(pid)
-            if os.name == "posix":
-                same_user = process.uids().real == os.getuid()
-            else:
-                same_user = process.username() == psutil.Process().username()
-            if not same_user or not self._is_daemon_command(process.cmdline()):
+            if not self._is_owned_daemon(process):
                 raise ProjectServerEndpointError(f"Refusing to terminate pid={pid}: not a Serena project server owned by this user")
-            connections = process.net_connections(kind="tcp")
-            if not any(
-                connection.status == psutil.CONN_LISTEN
-                and connection.laddr
-                and self._endpoint.matches_listener(connection.laddr.ip, connection.laddr.port)
-                for connection in connections
-            ):
+            if not self._is_endpoint_listener(process):
                 raise ProjectServerEndpointError(f"Refusing to terminate pid={pid}: not the listener at {self._endpoint.base_url}")
             return process
         except (psutil.NoSuchProcess, psutil.AccessDenied) as error:
@@ -367,27 +379,39 @@ class SharedMCPDaemon:
                 f"Cannot verify ownership of daemon pid={pid} at {self._endpoint.base_url}: {error}"
             ) from error
 
+    def _discover_owned_listener(self) -> psutil.Process:
+        # avoid privileged system-wide socket enumeration by qualifying each process first
+        candidates: list[psutil.Process] = []
+        try:
+            for process in psutil.process_iter():
+                try:
+                    if not self._is_owned_daemon(process):
+                        continue
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+                try:
+                    if self._is_endpoint_listener(process):
+                        candidates.append(process)
+                except psutil.NoSuchProcess:
+                    continue
+        except (psutil.AccessDenied, OSError) as error:
+            raise ProjectServerEndpointError(f"Cannot discover the listener at {self._endpoint.base_url}: {error}") from error
+        if len(candidates) != 1:
+            raise ProjectServerEndpointError(
+                f"Cannot identify one owned Serena listener at {self._endpoint.base_url}; no process was terminated"
+            )
+
+        # recheck the selected socket and retain its original creation-time identity
+        process = candidates.pop()
+        verified = self._owned_listener(process.pid)
+        if not process.is_running() or verified.create_time() != process.create_time():
+            raise ProjectServerEndpointError("The daemon process changed during discovery; no process was terminated")
+        return process
+
     def _stop_daemon(self, pid: int | None) -> None:
         # discover only this endpoint when an authenticated legacy heartbeat omits its PID
-        if pid is None:
-            try:
-                candidates = {
-                    connection.pid
-                    for connection in psutil.net_connections(kind="tcp")
-                    if connection.pid is not None
-                    and connection.status == psutil.CONN_LISTEN
-                    and connection.laddr
-                    and self._endpoint.matches_listener(connection.laddr.ip, connection.laddr.port)
-                }
-            except (psutil.AccessDenied, OSError) as error:
-                raise ProjectServerEndpointError(f"Cannot discover the listener at {self._endpoint.base_url}: {error}") from error
-            if len(candidates) != 1:
-                raise ProjectServerEndpointError(
-                    f"Cannot identify one owned Serena listener at {self._endpoint.base_url}; no process was terminated"
-                )
-            pid = candidates.pop()
-        process = self._owned_listener(pid)
-        log.info("Stopping verified Serena daemon pid=%s at %s", pid, self._endpoint.base_url)
+        process = self._discover_owned_listener() if pid is None else self._owned_listener(pid)
+        log.info("Stopping verified Serena daemon pid=%s at %s", process.pid, self._endpoint.base_url)
         self._terminate_tree(process)
 
     @staticmethod

@@ -161,6 +161,7 @@ class TestSearchText:
         ("content", "pattern", "expected"),
         [
             ("a\r\nb", r"\n", [0]),
+            ("a\r\nb", r"\nb", [0, 1]),
             ("a\r\nb", r"\r\n", [0]),
             ("a\rb", r"\r", [0]),
             ("a\nb", r"\n", [0]),
@@ -654,9 +655,7 @@ class TestMultiFileContentReplacer:
         replacer = MultiFileContentReplacer(mode="literal")
         path, content = self.FILES[0]
         occurrences = [o for o in replacer.find_occurrences(self.FILES, "old_pkg", "new_pkg") if o.relative_path == path]
-        assert replacer.apply_to_content(content, list(reversed(occurrences))) == (
-            "import new_pkg\n\nvalue = new_pkg.compute()\n"
-        )
+        assert replacer.apply_to_content(content, list(reversed(occurrences))) == ("import new_pkg\n\nvalue = new_pkg.compute()\n")
 
     def test_many_occurrences_have_correct_incremental_line_numbers(self):
         replacer = MultiFileContentReplacer(mode="literal")

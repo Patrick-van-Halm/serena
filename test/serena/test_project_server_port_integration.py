@@ -1,14 +1,25 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 import json
+import os
+import socket
+import subprocess
+import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
 from serena.config.serena_config import SerenaConfig
-from serena.project_server import ProjectServer, ProjectServerClient
-from serena.project_server_endpoint import ProjectServerAuthenticationError
+from serena.project_server import ProjectServerClient
+from serena.project_server_endpoint import (
+    ProjectServerAuthenticationError,
+    ProjectServerEndpoint,
+    ProjectServerTimeoutError,
+    ProjectServerUnavailableError,
+)
 from serena.shared_mcp_client import SharedMCPDaemonClient
 from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION
 
@@ -22,15 +33,24 @@ def endpoint_server(monkeypatch):
         def do_GET(self):
             self.send_response(200 if self.headers.get("Authorization") == "Bearer test-secret" else 401)
             self.end_headers()
-            self.wfile.write(json.dumps({
-                "status": "alive", "pid": 1234,
-                "shared_mcp_protocol_version": SHARED_MCP_PROTOCOL_VERSION, "shared_mcp_build_id": "test-build",
-            }).encode())
+            self.wfile.write(
+                json.dumps(
+                    {
+                        "status": "alive",
+                        "pid": 1234,
+                        "shared_mcp_protocol_version": SHARED_MCP_PROTOCOL_VERSION,
+                        "shared_mcp_build_id": "test-build",
+                    }
+                ).encode()
+            )
 
         def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            response = b"read-result"
             self.send_response(200 if self.headers.get("Authorization") == "Bearer test-secret" else 401)
+            self.send_header("Content-Length", str(len(response)))
             self.end_headers()
-            self.wfile.write(b"read-result")
+            self.wfile.write(response)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     worker = threading.Thread(target=server.serve_forever, daemon=True)
@@ -74,25 +94,59 @@ def test_both_clients_report_endpoint_authentication_mismatch(endpoint_server, c
 
 
 @pytest.mark.parametrize("override", ["config", "environment", "explicit"])
-def test_listener_uses_resolved_port(monkeypatch, override) -> None:
-    config = SerenaConfig(project_server_port=25432)
-    monkeypatch.setattr(SerenaConfig, "from_config_file", lambda: config)
-    monkeypatch.delenv("SERENA_PROJECT_SERVER_PORT", raising=False)
-    expected = 25432
-    explicit = None
+def test_listener_serves_resolved_port_without_reverse_dns(tmp_path: Path, override: str) -> None:
+    # use a private configuration and an OS-assigned port for the real listener
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        expected = reservation.getsockname()[1]
+    config_port = expected if override == "config" else 1
+    (tmp_path / "serena_config.yml").write_text(
+        f"projects: []\nproject_server_port: {config_port}\nauth_secret: test-secret\n", encoding="utf-8"
+    )
+    environment = dict(os.environ, SERENA_HOME=str(tmp_path), PYTHONUNBUFFERED="1")
+    environment.pop("SERENA_PROJECT_SERVER_PORT", None)
+    environment.pop("FLASK_RUN_FROM_CLI", None)
     if override in {"environment", "explicit"}:
-        monkeypatch.setenv("SERENA_PROJECT_SERVER_PORT", "25433")
-        expected = 25433
-    if override == "explicit":
-        explicit = expected = 25434
-    server = ProjectServer(port=explicit)
-    listened = []
-    monkeypatch.setattr(server._app, "run", lambda **kwargs: listened.append(kwargs["port"]))
-    try:
-        server.run()
-    finally:
-        server._mcp_runtime_stop_event.set()
-    assert listened == [expected]
+        environment["SERENA_PROJECT_SERVER_PORT"] = str(expected if override == "environment" else 2)
+    explicit = expected if override == "explicit" else None
+    code = f"""
+from unittest.mock import patch
+from serena.project_server import ProjectServer
+
+with patch("socket.getfqdn", side_effect=RuntimeError("reverse DNS unavailable")):
+    ProjectServer(port={explicit!r}).run()
+"""
+    endpoint = ProjectServerEndpoint(port=expected)
+    with (tmp_path / "listener.log").open("w+", encoding="utf-8") as output:
+        process = subprocess.Popen(
+            [sys.executable, "-c", code],
+            cwd=tmp_path,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=output,
+        )
+        try:
+            # wait for authenticated HTTP readiness, retaining startup failures as evidence
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    assert endpoint.heartbeat("test-secret", timeout=0.2)["status"] == "alive"
+                    break
+                except (ProjectServerUnavailableError, ProjectServerTimeoutError):
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        output.seek(0)
+                        pytest.fail(f"Project listener did not start: {output.read()}")
+                    time.sleep(0.02)
+            with pytest.raises(ProjectServerAuthenticationError):
+                endpoint.heartbeat("wrong-secret", timeout=1)
+        finally:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
 
 
 def test_global_port_round_trip_does_not_persist_environment(tmp_path, monkeypatch) -> None:

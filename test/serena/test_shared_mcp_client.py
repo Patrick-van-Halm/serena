@@ -8,7 +8,7 @@ from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_b
 
 
 def test_shared_client_rejects_legacy_daemon_without_protocol(monkeypatch) -> None:
-    response = MagicMock()
+    response = MagicMock(status_code=200)
     response.json.return_value = {"status": "alive"}
     monkeypatch.setattr("serena.shared_mcp_client.requests.get", lambda *args, **kwargs: response)
 
@@ -17,7 +17,7 @@ def test_shared_client_rejects_legacy_daemon_without_protocol(monkeypatch) -> No
 
 
 def test_shared_client_accepts_matching_daemon(monkeypatch) -> None:
-    response = MagicMock()
+    response = MagicMock(status_code=200)
     response.json.return_value = {
         "status": "alive",
         "shared_mcp_protocol_version": SHARED_MCP_PROTOCOL_VERSION,

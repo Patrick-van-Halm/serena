@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+import ipaddress
 import json
 import logging
 import os
@@ -12,19 +13,22 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
+from socketserver import TCPServer
 from typing import TYPE_CHECKING, Any, Literal
 
 import requests as requests_lib
 from flask import Flask, Response, abort, request
+from flask.helpers import get_load_dotenv
 from pydantic import BaseModel, Field
 from sensai.util.logging import LogTime
+from werkzeug.serving import ThreadedWSGIServer
 
 from serena.config.serena_config import LanguageBackend, SerenaConfig, project_root_key, project_roots_equal
 from serena.constants import SerenaPorts
 from serena.project_server_endpoint import ProjectServerEndpoint
 from serena.shared_mcp_calls import DuplicateToolCallError, SharedMCPCalls
-from serena.shared_mcp_recovery import DaemonRecovery, DaemonRecoveryRefusedError, RecoveryEvidence, RecoveryScope
 from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_build_id
+from serena.shared_mcp_recovery import DaemonRecovery, DaemonRecoveryRefusedError, RecoveryEvidence, RecoveryScope
 from serena.util.tool_call import ToolCall, ToolCallBusyError, ToolCallContext, ToolCallInterrupted
 from serena.util.tool_result import ToolResult, ToolResultCodec
 
@@ -36,6 +40,24 @@ log = logging.getLogger(__name__)
 
 # disable Werkzeug's logging to avoid cluttering the output
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+
+class _ProjectHTTPServer(ThreadedWSGIServer):
+    """Threaded listener without reverse DNS for numeric loopback addresses."""
+
+    def server_bind(self) -> None:
+        # preserve normal hostname handling for non-loopback listeners
+        try:
+            is_loopback = ipaddress.ip_address(self.host).is_loopback
+        except ValueError:
+            is_loopback = False
+        if not is_loopback:
+            super().server_bind()
+            return
+
+        # avoid HTTPServer's blocking reverse lookup before the socket starts listening
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class QueryProjectRequest(BaseModel):
@@ -438,9 +460,7 @@ class ProjectServer:
                 # Project selection is owned by the bridge/router. Exposing activate_project would
                 # let one conversation retarget the shared agent underneath other conversations.
                 tool_names = [
-                    tool.get_name()
-                    for tool in runtime.agent.get_exposed_tool_instances()
-                    if tool.get_name() != "activate_project"
+                    tool.get_name() for tool in runtime.agent.get_exposed_tool_instances() if tool.get_name() != "activate_project"
                 ]
                 if req.session_id:
                     with self._mcp_runtimes_lock:
@@ -600,9 +620,7 @@ class ProjectServer:
             inactive = [
                 (key, runtime)
                 for key, runtime in self._mcp_runtimes.items()
-                if runtime.active_calls == 0
-                and not runtime.bridge_sessions
-                and not runtime.agent.get_current_tasks()
+                if runtime.active_calls == 0 and not runtime.bridge_sessions and not runtime.agent.get_current_tasks()
             ]
 
             # Time-based eviction.
@@ -617,9 +635,7 @@ class ProjectServer:
                     (
                         (key, runtime)
                         for key, runtime in self._mcp_runtimes.items()
-                        if runtime.active_calls == 0
-                        and not runtime.bridge_sessions
-                        and not runtime.agent.get_current_tasks()
+                        if runtime.active_calls == 0 and not runtime.bridge_sessions and not runtime.agent.get_current_tasks()
                     ),
                     key=lambda item: item[1].last_access,
                 )
@@ -714,12 +730,19 @@ class ProjectServer:
         """
         from flask import cli
 
-        # suppress the default Flask startup banner
-        # ty cannot model reassigning a third-party module's function attribute (it rejects any
-        # replacement, even one with an identical signature), so the monkeypatch is suppressed here
-        cli.show_server_banner = lambda *args, **kwargs: None  # ty: ignore[invalid-assignment]
+        # retain Flask's environment loading and explicit non-debug configuration
+        if os.environ.get("FLASK_RUN_FROM_CLI") == "true":
+            return
+        if get_load_dotenv():
+            cli.load_dotenv()
+        self._app.debug = False
 
-        self._app.run(host=self._host, port=self._port, debug=False, use_reloader=False, threaded=True)
+        # own the listener so loopback startup cannot block on reverse DNS
+        try:
+            with _ProjectHTTPServer(self._host, self._port, self._app) as server:
+                server.serve_forever()
+        finally:
+            self._app._got_first_request = False
 
 
 class ProjectServerClient:

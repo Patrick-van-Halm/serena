@@ -12,6 +12,14 @@ Status of the `main` branch. Changes prior to the next official version change w
     see `CONTRIBUTING.md`
 
 * General:
+  - Fix: shared daemon startup recognizes interpreter children of Windows virtual-environment
+    launchers, preserving the healthy daemon instead of treating it as a competing process.
+  - Fix: loopback project-server startup no longer depends on reverse DNS, avoiding macOS resolver
+    stalls before the HTTP listener becomes ready.
+  - Fix: legacy daemon discovery verifies individual Serena processes, avoiding privileged system-wide
+    socket enumeration on macOS while preserving ownership and endpoint checks.
+  - Fix: ccls now provides hierarchical document symbols with bare method names, correct nesting and
+    full symbol ranges; previously persisted flat symbol results are invalidated.
   - **Major**: Add the Serena REPL as a new agent interface, reducing the tool set to a minimum and providing
     a general code execution environment for all Serena operations.
     This has several significant advantages over regular tool executions.  
@@ -45,6 +53,9 @@ Status of the `main` branch. Changes prior to the next official version change w
     including its project configuration, are left untouched (#2029)
 
 * Tools:
+  - Fix: reference context budgets now include complete symbol metadata and JSON escaping, avoiding
+    unnecessary source reads and keeping retained snippets within the response limit.
+  - Fix: pattern matches starting inside a CRLF newline now identify the line that newline terminates.
   - **Breaking**: Complete bulk MCP interfaces for filesystem operations, raw reads, symbols, memory
     files, and JetBrains operations. Calls accept request arrays even for one target, with ordered
     per-item outcomes and bounded output. Legacy configuration names continue to resolve to the new
@@ -86,6 +97,8 @@ Status of the `main` branch. Changes prior to the next official version change w
     thread (#2038)
 
 * Language Servers:
+  - Fix: explicit filesystem synchronization now bypasses the polling debounce, so immediate external
+    file creations, edits and deletions are visible to the next symbolic query.
   - Fix: Godot's GDScript parser can report a symbol's end column one column past the
     line-end convention every other language server follows (closing a node's range from
     the next lookahead token instead of the last consumed one, when that lookahead is a

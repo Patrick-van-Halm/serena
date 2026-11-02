@@ -3,7 +3,6 @@ End-to-end test of querying an external project through the REPL: a project serv
 operations of the queried project, and the (pickled) results are usable in the querying agent's REPL.
 """
 
-import socket
 import threading
 from collections.abc import Iterator
 
@@ -20,19 +19,13 @@ from test.conftest import language_server_tests_enabled
 from test.serena.test_serena_agent import serena_config  # noqa: F401  (fixture)
 
 
-def _free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
 @pytest.fixture
-def project_server(serena_config: SerenaConfig) -> Iterator[tuple[ProjectServer, int]]:  # noqa: F811
+def project_server(serena_config: SerenaConfig, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[ProjectServer, int]]:  # noqa: F811
     """
     Runs a project server (backed by a real agent) on a free port for the duration of the test.
     """
     config = serena_config
-    port = _free_port()
+    monkeypatch.delenv("SERENA_PROJECT_SERVER_PORT", raising=False)
 
     # construct the server around an agent with the test configuration (the constructor would load the user's configuration)
     server = ProjectServer.__new__(ProjectServer)
@@ -41,20 +34,27 @@ def project_server(serena_config: SerenaConfig) -> Iterator[tuple[ProjectServer,
     server._project_load_locks_by_root = {}
     server._active_project_lock = threading.Lock()
     server._loaded_projects_lock = threading.Lock()
-    server._port = port
     server._host = "127.0.0.1"
     from flask import Flask
 
     server._app = Flask(__name__)
     server._setup_routes()
 
-    http_server = make_server("127.0.0.1", port, server._app, threaded=True)
+    http_server = make_server("127.0.0.1", 0, server._app, threaded=True)
+    port = http_server.server_port
+    server._port = port
+    # External REPL calls resolve their endpoint from the querying agent's configuration.
+    config.project_server_port = port
     thread = threading.Thread(target=http_server.serve_forever, daemon=True)
     thread.start()
     try:
         yield server, port
     finally:
         http_server.shutdown()
+        thread.join(timeout=5)
+        http_server.server_close()
+        for project in server._loaded_projects_by_root.values():
+            project.shutdown(timeout=5)
         server._agent.on_shutdown(timeout=5)
 
 
@@ -77,10 +77,8 @@ def test_facade_method_results_are_transferred_from_the_project_server(project_s
 def test_external_project_context_in_repl(
     project_server: tuple[ProjectServer, int],
     serena_config: SerenaConfig,  # noqa: F811
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    server, port = project_server
-    monkeypatch.setattr(ProjectServer, "PORT", port)  # let the REPL's external project context use the test server
+    server, _ = project_server
 
     # enable the optional "ext" facade
     serena_config.included_apis = ["ext"]

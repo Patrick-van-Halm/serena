@@ -6,14 +6,16 @@ from unittest.mock import Mock
 
 import pytest
 
+from serena.config.serena_config import project_root_key
 from serena.project_server import MCPProjectRuntime, ProjectServer
 from serena.shared_mcp_recovery import DaemonRecovery, DaemonRecoveryRefusedError, RecoveryScope
 from serena.util.tool_call import ToolCall
 
 
 @pytest.fixture
-def stalled_server(monkeypatch):
+def stalled_server(monkeypatch, tmp_path):
     # represent a real expired ToolCall and the executor's published running-task view
+    project_root = project_root_key(tmp_path)
     clock = SimpleNamespace(now=100.0)
     monkeypatch.setattr("serena.util.tool_call.time", SimpleNamespace(monotonic=lambda: clock.now))
     call = ToolCall(1)
@@ -23,7 +25,7 @@ def stalled_server(monkeypatch):
     agent.get_current_tasks.return_value = [SimpleNamespace(is_running=True)]
     runtime = MCPProjectRuntime(
         agent=agent,
-        project_root="/repo",
+        project_root=project_root,
         context="codex",
         last_access=0,
         active_calls=1,
@@ -36,9 +38,9 @@ def stalled_server(monkeypatch):
     server._agent = None
     server._mcp_runtimes_lock = threading.Lock()
     server._mcp_runtime_load_locks = {}
-    server._mcp_runtimes = {("/repo", "codex"): runtime}
+    server._mcp_runtimes = {(project_root, "codex"): runtime}
     server._mcp_recovery = DaemonRecovery(server)
-    return server, runtime, RecoveryScope("/repo", "codex", "chat")
+    return server, runtime, RecoveryScope(project_root, "codex", "chat")
 
 
 def test_server_observes_stranded_worker_without_entering_its_binding_lock(stalled_server):
@@ -129,7 +131,7 @@ def test_claimed_recovery_excludes_all_new_work_but_preserves_control_access(rec
     server, runtime, payload, headers, clock = recovery_routes
     with server._app.test_client() as client:
         observed = client.post("/mcp/recovery", json={**payload, "action": "observe"}, headers=headers)
-        assert observed.status_code == 200
+        assert observed.status_code == 200, observed.get_data(as_text=True)
         request_id = observed.get_json()["request_id"]
         assert request_id == runtime.current_call.request_id
         clock.now += 2.0
@@ -138,7 +140,7 @@ def test_claimed_recovery_excludes_all_new_work_but_preserves_control_access(rec
             json={**payload, "action": "claim", "request_id": request_id},
             headers=headers,
         )
-        assert claimed.status_code == 200
+        assert claimed.status_code == 200, claimed.get_data(as_text=True)
         response = client.post(path, json={}, headers=headers)
         assert response.status_code == 503
         assert "not admitted" in response.get_data(as_text=True)

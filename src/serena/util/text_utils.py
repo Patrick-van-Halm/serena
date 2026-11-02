@@ -139,12 +139,7 @@ class _TextLineIndex:
         if index < 0 or index > len(self._content):
             raise ValueError(f"index out of range: {index}")
 
-        # Preserve TextUtils' LSP edge case: an index pointing at the LF inside a
-        # CRLF sequence maps to the beginning of the following line.
-        if 0 < index < len(self._content) and self._content[index] == "\n" and self._content[index - 1] == "\r":
-            line = bisect_right(self._line_starts, index) - 1
-            return line + 1, 0
-
+        # assign both characters of a CRLF newline to the line they terminate
         line = bisect_right(self._line_starts, index) - 1
         return line, index - self._line_starts[line]
 

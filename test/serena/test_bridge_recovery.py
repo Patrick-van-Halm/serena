@@ -51,9 +51,7 @@ async def test_bridge_recovery_bypasses_saturated_tool_workers_and_keeps_loop_re
 
     async with anyio.create_task_group() as tasks:
         tasks.start_soon(run)
-        with anyio.fail_after(2):
-            while not entered.is_set():
-                await anyio.sleep(0.01)
+        assert await anyio.to_thread.run_sync(entered.wait, 2)
         with pytest.raises(ToolError, match="already in progress"):
             await bridge.restart_daemon()
         release.set()

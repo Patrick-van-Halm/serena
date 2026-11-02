@@ -35,7 +35,7 @@ def test_invalid_global_port_is_rejected(port) -> None:
         ProjectServerEndpoint.from_config(SimpleNamespace(project_server_port=port))
 
 
-@pytest.mark.parametrize("value", ["", " ", "0", "-1", "65536", "3.14", "true", "0x5ea1", "２５４３２"])
+@pytest.mark.parametrize("value", ["", " ", "0", "-1", "65536", "3.14", "true", "0x5ea1", "\uff12\uff15\uff14\uff13\uff12"])
 def test_invalid_environment_override_is_not_silently_ignored(monkeypatch, value) -> None:
     monkeypatch.setenv("SERENA_PROJECT_SERVER_PORT", value)
     with pytest.raises(ValueError, match="SERENA_PROJECT_SERVER_PORT"):

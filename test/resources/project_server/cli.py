@@ -9,8 +9,17 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 
 from serena.shared_mcp_recovery import DaemonRecovery, DaemonRecoveryRefusedError, RecoveryEvidence, RecoveryScope
+
+
+class LoopbackHTTPServer(ThreadingHTTPServer):
+    """Bind the numeric test address without a reverse-DNS lookup."""
+
+    def server_bind(self) -> None:
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 def top_level() -> None:
@@ -111,4 +120,5 @@ def top_level() -> None:
                 response["pid"] = int(os.getenv("DAEMON_TEST_PID", str(os.getpid())))
             self.wfile.write(json.dumps(response).encode())
 
-    ThreadingHTTPServer((args.host, args.port), Handler).serve_forever()
+    with LoopbackHTTPServer((args.host, args.port), Handler) as server:
+        server.serve_forever()

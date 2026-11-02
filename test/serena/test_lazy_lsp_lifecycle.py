@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 from serena.agent import SerenaAgent
 from serena.config.serena_config import LanguageBackend
 from serena.project import Project
+from serena.task_executor import TaskExecutor
 
 
 def _bare_project(timeout: float = 600.0) -> Project:
@@ -71,28 +72,27 @@ def test_active_symbolic_operation_blocks_idle_shutdown() -> None:
 
 
 def test_agent_defers_lsp_initialization_when_lazy() -> None:
-    agent = SerenaAgent.__new__(SerenaAgent)
+    agent = MagicMock(spec=SerenaAgent)
     agent._active_project = MagicMock(project_name="project")
-    agent._language_backend = LanguageBackend.LSP
+    agent.get_language_backend.return_value = LanguageBackend.LSP
     agent.serena_config = MagicMock(language_server_lazy_start=True)
     agent.reset_language_server_manager = MagicMock()
 
-    agent._init_active_project_language_backend()
+    SerenaAgent._init_active_project_language_backend(agent)
 
     agent.reset_language_server_manager.assert_not_called()
 
 
 def test_agent_eager_lsp_initialization_remains_available() -> None:
-    agent = SerenaAgent.__new__(SerenaAgent)
+    agent = MagicMock(spec=SerenaAgent)
     agent._active_project = MagicMock(project_name="project")
-    agent._language_backend = LanguageBackend.LSP
+    agent.get_language_backend.return_value = LanguageBackend.LSP
     agent.serena_config = MagicMock(language_server_lazy_start=False)
     agent.reset_language_server_manager = MagicMock()
 
-    agent._init_active_project_language_backend()
+    SerenaAgent._init_active_project_language_backend(agent)
 
     agent.reset_language_server_manager.assert_called_once_with()
-
 
 
 def test_symbolic_tool_holds_language_server_activity_lease() -> None:
@@ -118,14 +118,7 @@ def test_symbolic_tool_holds_language_server_activity_lease() -> None:
     agent.get_active_project_or_raise.return_value = project
     agent.get_active_tools.return_value.contains_tool_name.return_value = True
 
-    class ImmediateTask:
-        def __init__(self, fn):
-            self.fn = fn
-
-        def result(self, timeout=None):
-            return self.fn()
-
-    agent.issue_task.side_effect = lambda fn, **kwargs: ImmediateTask(fn)
+    agent.issue_task.side_effect = TaskExecutor("SymbolicToolLeaseTest").issue_task
 
     class SymbolicTool(Tool, ToolMarkerSymbolicRead):
         def apply(self) -> str:

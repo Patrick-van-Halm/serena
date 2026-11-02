@@ -53,7 +53,6 @@ def test_available_languages_exclude_project_languages():
     assert LanguageServerId.ANSIBLE.value in available
 
 
-
 def test_registered_project_active_state_uses_root_not_name(tmp_path) -> None:
     from serena.config.serena_config import ProjectConfig, RegisteredProject
 
