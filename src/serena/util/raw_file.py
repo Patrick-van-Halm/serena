@@ -49,7 +49,7 @@ class RawFileContent:
         project.validate_relative_path(str(path))
         before = path.stat()
         if not stat.S_ISREG(before.st_mode):
-            raise ValueError("read_file_raw requires a regular file, not a directory, device, socket, or pipe.")
+            raise ValueError("read_files_raw requires a regular file, not a directory, device, socket, or pipe.")
         if before.st_size > max_bytes:
             raise ValueError(f"File exceeds max_bytes={max_bytes}; no content was read.")
 
@@ -59,7 +59,7 @@ class RawFileContent:
         try:
             opened = os.fstat(descriptor)
             if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-                raise ValueError("File changed during read_file_raw; retry after the file is stable.")
+                raise ValueError("File changed during read_files_raw; retry after the file is stable.")
             if opened.st_size > max_bytes:
                 raise ValueError(f"File exceeds max_bytes={max_bytes}; no content was read.")
             with os.fdopen(descriptor, "rb", closefd=False) as stream:
@@ -68,7 +68,7 @@ class RawFileContent:
                 raise ValueError(f"File exceeds max_bytes={max_bytes}; no partial content is returned.")
             after = os.fstat(descriptor)
             if (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns) != (after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-                raise ValueError("File changed during read_file_raw; retry after the file is stable.")
+                raise ValueError("File changed during read_files_raw; retry after the file is stable.")
         finally:
             os.close(descriptor)
         return cls(path=path, data=data)

@@ -857,7 +857,7 @@ class MultiFileReplacement:
                 "No occurrences of the pattern were found - NO changes were applied. "
                 "Check the mode (a literal needle containing regex metacharacters must use mode 'literal'; "
                 "wildcards require mode 'regex') and the path/glob restrictions, "
-                "or locate the content with search_for_pattern first.",
+                "or locate the content with a pattern search first.",
                 show_prospective_changes=False,
             )
         if expected_count >= 0 and len(self.occurrences) != expected_count:

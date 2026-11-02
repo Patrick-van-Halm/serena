@@ -65,15 +65,15 @@ class DaemonRecovery:
     LEASE_SECONDS = 60.0
     _SAFE_READS = frozenset(
         {
-            "get_symbols_overview",
-            "find_symbol",
+            "get_symbols_overviews",
+            "find_symbols",
             "find_referencing_symbols",
-            "find_declaration",
+            "find_declarations",
             "find_implementations",
-            "find_file",
+            "find_files",
             "list_dirs",
             "read_files",
-            "search_for_pattern",
+            "search_for_patterns",
         }
     )
 

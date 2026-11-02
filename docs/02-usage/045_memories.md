@@ -78,7 +78,7 @@ Memories may reference each other. Serena recognizes a reference as a memory nam
 `mem:` and wrapped in backticks, for example `` `mem:auth/login` `` or `` `mem:suggested_commands` ``.
 This convention has two practical consequences:
 
-- **Renames keep references intact.** When you rename or move a memory with the `rename_memory`
+- **Renames keep references intact.** When you rename or move a memory with the `rename_memories`
   tool, Serena rewrites every `` `mem:OLD_NAME` `` occurrence across all memories to point to
   the new name. References that do not use the `mem:` prefix will not be updated automatically.
 - **Integrity checks** (see [below](memory-cli)) report any `` `mem:NAME` `` whose target does
@@ -115,7 +115,7 @@ global or project-level [configuration](050_configuration):
 ignored_memory_patterns: ["_archive/.*", "_episodes/.*"]
 ```
 
-Ignored memories are completely excluded - they cannot be accessed via `read_memory`, `write_memory`,
+Ignored memories are completely excluded - they cannot be accessed via `read_memories`, `write_memories`,
 or any other memory tool. To read an ignored memory file, use `read_files` with a one-item `files` array containing the raw file path
 (e.g., `.serena/memories/_archive/2026-03/some-topic.md`).
 

@@ -897,7 +897,7 @@ class TestSerenaAgent:
             exposed = {tool.get_name() for tool in agent.get_exposed_tool_instances()}
             assert exposed.isdisjoint(GROK_EXCLUDED_TOOLS)
             assert "activate_project" not in exposed
-            assert {"find_symbol", "get_symbols_overview", "replace_symbol_body"} <= exposed
+            assert {"find_symbols", "get_symbols_overviews", "replace_symbol_bodies"} <= exposed
             assert "Serena's code intelligence tools" in agent.create_system_prompt()
         finally:
             agent.on_shutdown(timeout=5)

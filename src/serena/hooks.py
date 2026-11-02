@@ -59,6 +59,7 @@ _NON_SYMBOLIC_SERENA_TOOL_NAME_SUBSTRINGS = frozenset(
         "read",
         "diagnostics",
         "memory",
+        "memories",
         "onboarding",
         "config",
         "list_file",
@@ -292,7 +293,7 @@ class PreToolUseRemindAboutSymbolicToolsHook(PreToolUseHook):
 
     #: file suffixes for source-like files where symbolic tools are usually more
     #: appropriate than repeated raw reads. Lowercase and extension-only.
-    #: Note: ``search_for_pattern`` is always available regardless of extension and
+    #: Note: ``search_for_patterns`` is available regardless of extension and
     #: is a better alternative to repeated raw reads for any structured file type.
     _CODE_FILE_EXTENSIONS: frozenset[str] = frozenset(
         (
@@ -598,8 +599,8 @@ class PreToolUseAutoApproveSerenaHook(PreToolUseHook):
 
     Claude Code's permissive permission modes (``acceptEdits`` for blanket edit approval and
     ``auto`` for hands-off autonomous execution) only apply to its built-in editing tools or
-    its auto-mode classifier; Serena's destructive tools (e.g. ``replace_symbol_body`` or
-    ``rename_symbol``) would still prompt the user on every call. This hook emits an ``allow``
+    its auto-mode classifier; Serena's destructive tools (e.g. ``replace_symbol_bodies`` or
+    ``rename_symbols``) would still prompt the user on every call. This hook emits an ``allow``
     decision for any Serena MCP tool call whenever the client reports one of these modes as
     the active permission mode, so blanket approvals also cover Serena's tools. In all other
     situations it stays silent, preserving the default approval flow.

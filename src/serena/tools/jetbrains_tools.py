@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from serena.symbol import SymbolDictGrouper
 from serena.tools import Tool, ToolMarkerOptional, ToolMarkerSymbolicEdit, ToolMarkerSymbolicRead
+from serena.tools.batch import ToolBatch
 
 if TYPE_CHECKING:
     from serena.repl.api.jb_api import JetBrainsApi
@@ -29,6 +30,8 @@ class JetBrainsFindSymbolTool(Tool, ToolMarkerSymbolicRead, ToolMarkerOptional, 
     """
     Performs a global (or local) search for symbols using the JetBrains backend
     """
+
+    batch = ToolBatch("jet_brains_find_symbols", "queries")
 
     @property
     def symbol_dict_grouper(self) -> SymbolDictGrouper:
@@ -124,6 +127,8 @@ class JetBrainsMoveTool(Tool, ToolMarkerSymbolicEdit, ToolMarkerOptional, JetBra
     Moves a symbol, file or directory to a new location using the JetBrains backend, updating all references
     """
 
+    batch = ToolBatch("jet_brains_move_items", "moves")
+
     def apply(
         self,
         relative_path: str,
@@ -164,6 +169,8 @@ class JetBrainsSafeDeleteTool(Tool, ToolMarkerSymbolicEdit, ToolMarkerOptional, 
     Safely deletes a symbol using the JetBrains backend, checking for remaining usages first
     """
 
+    batch = ToolBatch("jet_brains_safe_delete_items", "items")
+
     def apply(
         self,
         relative_path: str,
@@ -196,6 +203,8 @@ class JetBrainsInlineSymbol(Tool, ToolMarkerSymbolicEdit, ToolMarkerOptional, Je
     Inlines a symbol using the JetBrains backend, replacing all call sites with the symbol's body
     """
 
+    batch = ToolBatch("jet_brains_inline_symbols", "symbols")
+
     def apply(
         self,
         name_path: str,
@@ -222,6 +231,8 @@ class JetBrainsFindReferencingSymbolsTool(Tool, ToolMarkerSymbolicRead, ToolMark
     """
     Finds symbols that reference the given symbol using the JetBrains backend
     """
+
+    batch = ToolBatch("jet_brains_find_referencing_symbols", "symbols")
 
     @property
     def symbol_dict_grouper(self) -> SymbolDictGrouper:
@@ -254,6 +265,8 @@ class JetBrainsGetSymbolsOverviewTool(Tool, ToolMarkerSymbolicRead, ToolMarkerOp
     """
     Retrieves an overview of the top-level symbols within a specified file using the JetBrains backend
     """
+
+    batch = ToolBatch("jet_brains_get_symbols_overviews", "files")
 
     @property
     def symbol_dict_grouper(self) -> SymbolDictGrouper:
@@ -288,6 +301,8 @@ class JetBrainsTypeHierarchyTool(Tool, ToolMarkerSymbolicRead, ToolMarkerOptiona
     Retrieves the type hierarchy (supertypes and/or subtypes) of a symbol using the JetBrains backend
     """
 
+    batch = ToolBatch("jet_brains_type_hierarchies", "symbols")
+
     def apply(
         self,
         name_path: str,
@@ -317,6 +332,8 @@ class JetBrainsFindDeclarationTool(Tool, ToolMarkerSymbolicRead, ToolMarkerOptio
     Finds the declaration of a symbol using the JetBrains backend
     """
 
+    batch = ToolBatch("jet_brains_find_declarations", "queries")
+
     def apply(self, relative_path: str, regex: str, include_body: bool = False) -> str:
         r"""
         Finds the declaration of a symbol.
@@ -339,6 +356,8 @@ class JetBrainsFindImplementationsTool(Tool, ToolMarkerSymbolicRead, ToolMarkerO
     Finds the implementations of a symbol using the JetBrains backend
     """
 
+    batch = ToolBatch("jet_brains_find_implementations", "symbols")
+
     def apply(self, relative_path: str, name_path: str) -> str:
         """
         Finds the implementations of a symbol.
@@ -353,6 +372,8 @@ class JetBrainsRenameTool(Tool, ToolMarkerSymbolicEdit, ToolMarkerOptional, JetB
     """
     Renames a symbol, file or directory throughout the codebase using the JetBrains backend.
     """
+
+    batch = ToolBatch("jet_brains_rename_items", "renames")
 
     def apply(
         self,
@@ -407,6 +428,8 @@ class JetBrainsRunInspectionsTool(Tool, ToolMarkerSymbolicRead, ToolMarkerOption
     """
     Runs JetBrains IDE inspections on a file and returns the results.
     """
+
+    batch = ToolBatch("jet_brains_run_inspections", "files")
 
     def apply(
         self,

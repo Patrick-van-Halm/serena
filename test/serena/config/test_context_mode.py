@@ -1,18 +1,20 @@
 import pytest
 
 from interprompt.jinja_template import JinjaTemplate
+from serena.agent import ToolSet
 from serena.config.context_mode import SerenaAgentContext
+from serena.tools import ToolRegistry
 
 GROK_EXCLUDED_TOOLS = {
-    "create_text_file",
-    "delete_path",
-    "copy_path",
-    "move_path",
-    "read_file",
+    "create_text_files",
+    "delete_paths",
+    "copy_paths",
+    "move_paths",
+    "read_files",
     "execute_shell_command",
-    "find_file",
-    "list_dir",
-    "search_for_pattern",
+    "find_files",
+    "list_dirs",
+    "search_for_patterns",
 }
 
 BUILTIN_RUNTIME_CONTEXT_NAMES = [
@@ -23,14 +25,13 @@ BUILTIN_RUNTIME_CONTEXT_NAMES = [
 def _render_context_prompt(context: SerenaAgentContext) -> str:
     """Render with the same template variables SerenaAgent._format_prompt provides.
 
-    Note: context YAMLs (e.g. grok.yml) are currently static (no Jinja), but the variables
-    match exactly what _format_prompt supplies. The outer system prompt template uses them.
+    Context templates use the same name mapping as the outer system prompt.
     """
-    # Provide non-empty values so any future Jinja in a context prompt would still be exercised.
+    names = set(ToolRegistry().get_tool_names_default_enabled())
     return JinjaTemplate(context.prompt).render(
-        available_tools=["find_symbol", "get_symbols_overview", "replace_content"],
+        available_tools=names,
         available_markers=["ToolMarkerSymbolicRead"],
-        tool_names={"find_symbol": "find_symbol", "get_symbols_overview": "get_symbols_overview"},
+        tool_names=dict(ToolSet.LEGACY_TOOL_NAME_MAPPING) | {name: name for name in names},
     )
 
 

@@ -6,7 +6,8 @@ from abc import ABC
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from types import MethodType
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar, cast
 
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.utilities.func_metadata import FuncMetadata, func_metadata
@@ -21,6 +22,7 @@ from serena.memories.memory_manager import MemoryManager
 from serena.project import Project
 from serena.prompt_factory import PromptFactory
 from serena.repl.facade import SUCCESS_RESULT
+from serena.tools.batch import ToolBatch
 from serena.util.class_decorators import singleton
 from serena.util.inspection import iter_subclasses
 from serena.util.mcp_context import MCPConnectionIdentity
@@ -153,6 +155,9 @@ class ToolCallError(Exception):
 
 
 class Tool(Component):
+    batch: ClassVar[ToolBatch | None] = None
+    """Optional public MCP batch contract; scalar ``apply`` remains the per-item Python implementation."""
+
     # NOTE: each tool should implement the apply method, which is then used in
     # the central method of the Tool class `apply_ex`.
     # Failure to do so will result in a RuntimeError at tool execution time.
@@ -204,6 +209,8 @@ class Tool(Component):
 
     @classmethod
     def get_name_from_cls(cls) -> str:
+        if cls.batch is not None:
+            return cls.batch.name
         name = cls.__name__
         if name.endswith("Tool"):
             name = name[:-4]
@@ -215,9 +222,20 @@ class Tool(Component):
         return self.get_name_from_cls()
 
     def get_apply_fn(self) -> ApplyMethodProtocol:
+        if self.batch is not None:
+            return cast(ApplyMethodProtocol, MethodType(self._get_apply_fn_from_cls(), self))
         apply_fn = getattr(self, "apply")
         if apply_fn is None:
             raise RuntimeError(f"apply not defined in {self}. Did you forget to implement it?")
+        return apply_fn
+
+    @classmethod
+    def _get_apply_fn_from_cls(cls) -> Callable[..., Any]:
+        if cls.batch is not None:
+            return cls.batch.apply_function(cls)
+        apply_fn = getattr(cls, "apply", None)
+        if apply_fn is None:
+            raise AttributeError(f"apply method not defined in {cls}. Did you forget to implement it?")
         return apply_fn
 
     @classmethod
@@ -241,15 +259,7 @@ class Tool(Component):
         """Get the docstring for the apply method from the class (static metadata).
         Needed for creating MCP tools in a separate process without running into serialization issues.
         """
-        # First try to get from __dict__ to handle dynamic docstring changes
-        if "apply" in cls.__dict__:
-            apply_fn = cls.__dict__["apply"]
-        else:
-            # Fall back to getattr for inherited methods
-            apply_fn = getattr(cls, "apply", None)
-            if apply_fn is None:
-                raise AttributeError(f"apply method not defined in {cls}. Did you forget to implement it?")
-
+        apply_fn = cls._get_apply_fn_from_cls()
         docstring = apply_fn.__doc__
         if not docstring:
             raise AttributeError(f"apply method has no (or empty) docstring in {cls}. Did you forget to implement it?")
@@ -268,16 +278,14 @@ class Tool(Component):
         """Get the metadata for the apply method from the class (static metadata).
         Needed for creating MCP tools in a separate process without running into serialization issues.
         """
-        # First try to get from __dict__ to handle dynamic docstring changes
-        if "apply" in cls.__dict__:
-            apply_fn = cls.__dict__["apply"]
-        else:
-            # Fall back to getattr for inherited methods
-            apply_fn = getattr(cls, "apply", None)
-            if apply_fn is None:
-                raise AttributeError(f"apply method not defined in {cls}. Did you forget to implement it?")
-
-        return func_metadata(apply_fn, skip_names=["self", "cls", cls.SESSION_ID_PARAM_NAME], structured_output=structured_output)
+        metadata = func_metadata(
+            cls._get_apply_fn_from_cls(), skip_names=["self", "cls", cls.SESSION_ID_PARAM_NAME], structured_output=structured_output
+        )
+        if cls.batch is not None:
+            # reject unknown top-level keys before the SDK can discard them
+            metadata.arg_model.model_config["extra"] = "forbid"
+            metadata.arg_model.model_rebuild(force=True)
+        return metadata
 
     def _log_tool_application(self, frame: Any, session_id: str) -> None:
         params = {}

@@ -10,7 +10,6 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-
 from serena.shared_mcp_recovery import DaemonRecovery, DaemonRecoveryRefusedError, RecoveryEvidence, RecoveryScope
 
 
@@ -42,8 +41,11 @@ def top_level() -> None:
             if scope.session_id != "chat":
                 raise DaemonRecoveryRefusedError("Wrong session")
             return RecoveryEvidence(
-                "blocked-call", "replace_symbol_body" if mode == "edit" else "find_symbol",
-                mode != "edit", mode in {"blocked", "recovers", "edit"} and not self.completed, 31.0,
+                "blocked-call",
+                "replace_symbol_bodies" if mode == "edit" else "find_symbols",
+                mode != "edit",
+                mode in {"blocked", "recovers", "edit"} and not self.completed,
+                31.0,
             )
 
     source = Source()

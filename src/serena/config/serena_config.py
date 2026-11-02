@@ -468,7 +468,7 @@ class ProjectConfig(SharedConfig, ModeSelectionDefinitionWithAddedModes):
             log.warning(
                 "No source files for supported language servers were found in %s. "
                 "Creating project with no configured language servers. "
-                "Symbol-related tools (e.g. find_symbol, get_symbols_overview) will not work "
+                "Symbol-related tools (e.g. find_symbols, get_symbols_overviews) will not work "
                 "when using the LSP backend. You can add languages later via the Serena dashboard "
                 "or by manually editing the project configuration.",
                 project_root,
@@ -1418,9 +1418,7 @@ class SerenaConfig(SharedConfig, ModeSelectionDefinitionWithBaseModes):
             # another daemon runtime may have registered a same-named worktree.
             self.refresh_registered_projects()
 
-        project_candidates = [
-            project for project in self.projects if project.project_config.project_name == project_root_or_name
-        ]
+        project_candidates = [project for project in self.projects if project.project_config.project_name == project_root_or_name]
         if len(project_candidates) == 1:
             return project_candidates[0]
         if len(project_candidates) > 1:

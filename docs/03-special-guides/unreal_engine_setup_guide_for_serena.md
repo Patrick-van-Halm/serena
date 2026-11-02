@@ -120,8 +120,8 @@ To exclude further paths, add them to `ignored_paths` in your project's
   the project.
 - **New `UFUNCTION`/`UCLASS` declarations** need a build before their generated
   headers exist.
-- **Symbol searches on large projects:** prefer passing `relative_path` to
-  `find_symbol`. An unscoped search visits every translation unit, and UE
+- **Symbol searches on large projects:** prefer setting `relative_path` in each
+  `find_symbols` query. An unscoped search visits every translation unit, and UE
   files are expensive to parse because each pulls in large engine headers.
 - **clangd index logs (MSVC database):** an `Indexed ... (N symbols)` line is a success.
   A following `Failed to compile ... index may be incomplete` means clangd hit errors

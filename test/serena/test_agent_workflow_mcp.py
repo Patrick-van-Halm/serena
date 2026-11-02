@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-"""Installed application checks for batch directory and editing tools over MCP."""
+"""Installed application checks for file, memory, directory and editing batches over MCP."""
 
 import json
 import subprocess
@@ -32,16 +32,28 @@ def test_batch_transport_and_policy(isolated_project, bridge: bool, policy: str,
     (fixture.project / "first/a.txt").write_text("a", encoding="utf-8")
     (fixture.project / "second/b.txt").write_text("b", encoding="utf-8")
     (fixture.project / "escaped.txt").write_text('"\\\t\n😀' * 2000, encoding="utf-8")
+    memories = fixture.project / ".serena/memories"
+    memories.mkdir(exist_ok=True)
+    (memories / "first.md").write_text("first memory", encoding="utf-8")
+    (memories / "second.md").write_text("second memory", encoding="utf-8")
     if excluded or policy == "fixed_legacy":
         context_path = fixture.home / "contexts/codex.yml"
         context = yaml.safe_load(context_path.read_text(encoding="utf-8"))
         if policy == "fixed_legacy":
-            context["fixed_tools"] = ["read_file", "list_dir", "replace_content", "initial_instructions", "read_file_raw"]
+            context["fixed_tools"] = [
+                "read_file",
+                "list_dir",
+                "replace_content",
+                "initial_instructions",
+                "read_file_raw",
+                "create_text_file",
+                "read_memory",
+            ]
         else:
             context["excluded_tools"] = (
-                ["list_dir", "replace_content", "read_file"]
+                ["list_dir", "replace_content", "read_file", "create_text_file", "read_memory"]
                 if policy == "excluded_legacy"
-                else ["list_dirs", "replace_contents", "read_files"]
+                else ["list_dirs", "replace_contents", "read_files", "create_text_files", "read_memories"]
             )
         context_path.write_text(yaml.safe_dump(context), encoding="utf-8")
 
@@ -96,11 +108,44 @@ def test_batch_transport_and_policy(isolated_project, bridge: bool, policy: str,
                                 "list_dirs",
                                 "replace_contents",
                                 "initial_instructions",
-                                "read_file_raw",
+                                "read_files_raw",
+                                "create_text_files",
+                                "read_memories",
                             } | ({"restart_daemon"} if bridge else set())
                         if not excluded:
                             assert tools["list_dirs"].annotations.read_only_hint
                             assert tools["read_files"].annotations.read_only_hint
+                        memory_result = await client.call_tool(
+                            "read_memories",
+                            {"memories": [{"memory_name": "first"}, {"memory_name": "missing"}, {"memory_name": "second"}]},
+                        )
+                        if excluded:
+                            assert memory_result.is_error
+                        else:
+                            assert not memory_result.is_error, text_of(memory_result)
+                            memory_rows = json.loads(text_of(memory_result))["results"]
+                            assert [row["status"] for row in memory_rows] == ["completed", "error", "completed"]
+                            assert memory_rows[0]["result"] == "first memory"
+                            assert "FileNotFoundError" in memory_rows[1]["error"]
+                            assert memory_rows[2]["result"] == "second memory"
+                        created = await client.call_tool(
+                            "create_text_files",
+                            {
+                                "files": [
+                                    {"relative_path": "created/a.txt", "content": "one"},
+                                    {"relative_path": "created/b.txt", "content": "two"},
+                                ]
+                            },
+                        )
+                        if editing_blocked:
+                            assert created.is_error
+                            assert not (fixture.project / "created").exists()
+                        else:
+                            assert not created.is_error, text_of(created)
+                            created_rows = json.loads(text_of(created))["results"]
+                            assert [row["status"] for row in created_rows] == ["completed", "completed"]
+                            assert (fixture.project / "created/a.txt").read_text() == "one"
+                            assert (fixture.project / "created/b.txt").read_text() == "two"
                         batch = await client.call_tool(
                             "read_files",
                             {"files": [{"relative_path": "first/a.txt"}, {"relative_path": "missing"}, {"relative_path": "second/b.txt"}]},

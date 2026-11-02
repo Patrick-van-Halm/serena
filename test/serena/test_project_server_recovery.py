@@ -22,9 +22,15 @@ def stalled_server(monkeypatch):
     agent = Mock()
     agent.get_current_tasks.return_value = [SimpleNamespace(is_running=True)]
     runtime = MCPProjectRuntime(
-        agent=agent, project_root="/repo", context="codex", last_access=0,
-        active_calls=1, current_call=call, current_tool_name="find_symbol",
-        current_tool_read_only=True, current_session_id="chat",
+        agent=agent,
+        project_root="/repo",
+        context="codex",
+        last_access=0,
+        active_calls=1,
+        current_call=call,
+        current_tool_name="find_symbols",
+        current_tool_read_only=True,
+        current_session_id="chat",
     )
     server = ProjectServer.__new__(ProjectServer)
     server._agent = None
@@ -108,10 +114,17 @@ def test_recovery_control_route_requires_authentication(recovery_routes):
     assert response.status_code == 401
 
 
-@pytest.mark.parametrize("path", [
-    "/query_project", "/mcp/runtime-info", "/mcp/bridge-heartbeat", "/mcp/bridge-close",
-    "/mcp/tool-call", "/call_facade_method",
-])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/query_project",
+        "/mcp/runtime-info",
+        "/mcp/bridge-heartbeat",
+        "/mcp/bridge-close",
+        "/mcp/tool-call",
+        "/call_facade_method",
+    ],
+)
 def test_claimed_recovery_excludes_all_new_work_but_preserves_control_access(recovery_routes, path):
     server, runtime, payload, headers, clock = recovery_routes
     with server._app.test_client() as client:
@@ -121,7 +134,9 @@ def test_claimed_recovery_excludes_all_new_work_but_preserves_control_access(rec
         assert request_id == runtime.current_call.request_id
         clock.now += 2.0
         claimed = client.post(
-            "/mcp/recovery", json={**payload, "action": "claim", "request_id": request_id}, headers=headers,
+            "/mcp/recovery",
+            json={**payload, "action": "claim", "request_id": request_id},
+            headers=headers,
         )
         assert claimed.status_code == 200
         response = client.post(path, json={}, headers=headers)
@@ -137,7 +152,7 @@ def test_claimed_recovery_excludes_all_new_work_but_preserves_control_access(rec
         server._query_project = lambda req: "admission restored"
         response = client.post(
             "/query_project",
-            json={"project_name": "repo", "tool_name": "read_file", "tool_params_json": "{}"},
+            json={"project_name": "repo", "tool_name": "read_files", "tool_params_json": "{}"},
             headers=headers,
         )
         assert response.status_code == 200

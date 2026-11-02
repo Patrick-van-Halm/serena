@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING, Literal, cast
 
 from serena.tools import Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActiveProject
+from serena.tools.batch import ToolBatch
 
 if TYPE_CHECKING:
     from serena.repl.api.mem_api import MemoryApi
@@ -27,6 +28,8 @@ class WriteMemoryTool(Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActivePro
     The memory name should be meaningful.
     """
 
+    batch = ToolBatch("write_memories", "memories")
+
     def apply(self, memory_name: str, content: str, max_chars: int = -1) -> str:
         """
         Write information useful for future tasks in md format.
@@ -47,6 +50,8 @@ class ReadMemoryTool(Tool, ToolMarkerDoesNotRequireActiveProject, MemoryApiMixin
     """
     Reads the content of a memory file.
     """
+
+    batch = ToolBatch("read_memories", "memories")
 
     def apply(self, memory_name: str) -> str:
         """
@@ -74,6 +79,8 @@ class DeleteMemoryTool(Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActivePr
     Delete a memory file.
     """
 
+    batch = ToolBatch("delete_memories", "memories")
+
     def apply(self, memory_name: str) -> str:
         """
         Delete a memory, only call if instructed explicitly or permission was granted by the user.
@@ -85,6 +92,8 @@ class RenameMemoryTool(Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActivePr
     """
     Renames or moves a memory, updating references that are marked with the `mem:` prefix.
     """
+
+    batch = ToolBatch("rename_memories", "renames")
 
     def apply(self, old_name: str, new_name: str) -> str:
         """
@@ -100,6 +109,8 @@ class EditMemoryTool(Tool, ToolMarkerCanEdit, ToolMarkerDoesNotRequireActiveProj
     """
     Replaces content matching a regular expression in a memory.
     """
+
+    batch = ToolBatch("edit_memories", "memories")
 
     def apply(
         self,

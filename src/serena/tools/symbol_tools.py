@@ -12,6 +12,7 @@ from serena.tools import (
     ToolMarkerSymbolicEdit,
     ToolMarkerSymbolicRead,
 )
+from serena.tools.batch import ToolBatch
 from serena.tools.file_tools import EditApiMixin
 from serena.tools.tools_base import ToolMarkerOptional
 
@@ -47,6 +48,8 @@ class GetSymbolsOverviewTool(Tool, ToolMarkerSymbolicRead, LspApiMixin):
     Gets an overview of the top-level symbols defined in a given file.
     """
 
+    batch = ToolBatch("get_symbols_overviews", "files")
+
     @property
     def symbol_dict_grouper(self) -> SymbolDictGrouper:
         from serena.repl.api.lsp_api import LspApi
@@ -74,6 +77,8 @@ class FindSymbolTool(Tool, ToolMarkerSymbolicRead, LspApiMixin):
     """
     Performs a global (or local) search using the language server backend.
     """
+
+    batch = ToolBatch("find_symbols", "queries")
 
     @property
     def symbol_dict_grouper(self) -> SymbolDictGrouper:
@@ -160,6 +165,8 @@ class FindReferencingSymbolsTool(Tool, ToolMarkerSymbolicRead, LspApiMixin):
     Finds symbols that reference the given symbol
     """
 
+    batch = ToolBatch("find_referencing_symbols", "symbols")
+
     @property
     def symbol_dict_grouper(self) -> SymbolDictGrouper:
         from serena.repl.api.lsp_api import LspApi
@@ -198,6 +205,8 @@ class FindImplementationsTool(Tool, ToolMarkerSymbolicRead, LspApiMixin):
     """
     Finds the implementations of a symbol
     """
+
+    batch = ToolBatch("find_implementations", "symbols")
 
     def apply(
         self,
@@ -240,6 +249,8 @@ class FindDeclarationTool(Tool, ToolMarkerSymbolicRead, LspApiMixin):
     Finds the declaration/definition of a symbol
     """
 
+    batch = ToolBatch("find_declarations", "queries")
+
     def apply(
         self,
         relative_path: str,
@@ -281,6 +292,8 @@ class GetDiagnosticsForFileTool(Tool, ToolMarkerSymbolicRead, LspApiMixin):
     Gets diagnostics for a file, grouped by symbol.
     """
 
+    batch = ToolBatch("get_diagnostics_for_files", "files")
+
     def apply(
         self,
         relative_path: str,
@@ -314,6 +327,8 @@ class GetDiagnosticsForSymbolTool(Tool, ToolMarkerSymbolicRead, ToolMarkerOption
     """
     Gets diagnostics for a symbol and, optionally, for symbols that reference it.
     """
+
+    batch = ToolBatch("get_diagnostics_for_symbols", "symbols")
 
     def apply(
         self,
@@ -354,6 +369,8 @@ class ReplaceSymbolBodyTool(EditingToolWithDiagnostics, EditApiMixin):
     Replaces the full definition of a symbol using the language server backend.
     """
 
+    batch = ToolBatch("replace_symbol_bodies", "replacements")
+
     def apply(
         self,
         name_path: str,
@@ -382,6 +399,8 @@ class InsertAfterSymbolTool(EditingToolWithDiagnostics, EditApiMixin):
     Inserts content after the end of the definition of a given symbol.
     """
 
+    batch = ToolBatch("insert_after_symbols", "insertions")
+
     def apply(
         self,
         name_path: str,
@@ -406,6 +425,8 @@ class InsertBeforeSymbolTool(EditingToolWithDiagnostics, EditApiMixin):
     """
     Inserts content before the beginning of the definition of a given symbol.
     """
+
+    batch = ToolBatch("insert_before_symbols", "insertions")
 
     def apply(
         self,
@@ -433,6 +454,8 @@ class RenameSymbolTool(Tool, ToolMarkerSymbolicEdit, LspApiMixin):
     For JB, we use a separate tool.
     """
 
+    batch = ToolBatch("rename_symbols", "renames")
+
     def apply(
         self,
         name_path: str,
@@ -453,6 +476,8 @@ class RenameSymbolTool(Tool, ToolMarkerSymbolicEdit, LspApiMixin):
 
 
 class SafeDeleteSymbol(Tool, ToolMarkerSymbolicEdit, LspApiMixin):
+    batch = ToolBatch("safe_delete_symbols", "symbols")
+
     def apply(
         self,
         name_path_pattern: str,

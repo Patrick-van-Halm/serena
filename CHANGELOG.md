@@ -45,6 +45,12 @@ Status of the `main` branch. Changes prior to the next official version change w
     including its project configuration, are left untouched (#2029)
 
 * Tools:
+  - **Breaking**: Complete bulk MCP interfaces for filesystem operations, raw reads, symbols, memory
+    files, and JetBrains operations. Calls accept request arrays even for one target, with ordered
+    per-item outcomes and bounded output. Legacy configuration names continue to resolve to the new
+    tools; Python and REPL per-item methods remain available. Multi-item edits are not atomic.
+  - Fix: lazy symbol-body reads preserve real line breaks and the accepted empty range just beyond
+    the last logical line, including when rereading symbols after bulk edits.
   - Fix: the file-editing tools saved the edited file with `open(path, "w")`, which truncates it
     before the new content is complete, so a crash, an OOM kill or a full disk partway through the
     write could leave a source file empty or half-written. Saves now go through the same atomic

@@ -114,7 +114,7 @@ If you need to work with projects that use different backends, you can either:
 You can verify that Serena is using the JetBrains plugin by either checking the dashboard, where
 you will see `Languages:
 Using JetBrains backend` in the configuration overview.
-You will also notice that your client will use the JetBrains-specific tools like `jet_brains_find_symbol` and others like it.
+You will also notice that your client will use the JetBrains-specific tools like `jet_brains_find_symbols` and others like it.
 
 (jetbrains-workflow)=
 ## Workflow

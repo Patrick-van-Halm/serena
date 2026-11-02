@@ -43,7 +43,7 @@ class ReadFilesTool(Tool, ToolMarkerDoesNotRequireActiveProject):
         the full normalized text, not just the requested range or returned prefix.
         Reads are serial, not a multi-file snapshot. Only local regular files are
         supported; encoded JetBrains external paths require the REPL's fs.read_file.
-        Use read_file_raw for images/binary files.
+        Use read_files_raw for images/binary files.
 
         :param files: known file paths and optional inclusive line ranges
         :param max_chars_per_file: decoded text limit per item; 1..200000

@@ -61,6 +61,20 @@ def test_unconfigured_directory_serves_file_and_shell_tools(
                 read = await server.call_tool("read_files", {"files": [{"relative_path": "note.txt"}]})
                 assert isinstance(read, CallToolResult)
                 read_results.append(json.loads(text_of(read))["results"][0]["content"])
+                created = await server.call_tool(
+                    "create_text_files",
+                    {
+                        "files": [
+                            {"relative_path": "first.txt", "content": "first"},
+                            {"relative_path": "notes/second.txt", "content": "second"},
+                        ]
+                    },
+                )
+                assert isinstance(created, CallToolResult)
+                assert not created.is_error, text_of(created)
+                outcomes = json.loads(text_of(created))["results"]
+                assert [row["status"] for row in outcomes] == ["completed", "completed"]
+                assert [row["error"] for row in outcomes] == [None, None]
                 shell = await server.call_tool("execute_shell_command", {"command": "echo projectless-shell"})
                 assert isinstance(shell, CallToolResult)
                 output = json.loads(text_of(shell))
@@ -76,6 +90,8 @@ def test_unconfigured_directory_serves_file_and_shell_tools(
         result = CliRunner().invoke(command, args)
         assert result.exit_code == 0, f"{result.output}\n{result.exception!r}"
         assert read_results == ["projectless read\n"]
+        assert (workspace / "first.txt").read_text(encoding="utf-8") == "first"
+        assert (workspace / "notes/second.txt").read_text(encoding="utf-8") == "second"
         if selection == "malformed":
             assert config_path.read_text(encoding="utf-8") == invalid_config
         else:
