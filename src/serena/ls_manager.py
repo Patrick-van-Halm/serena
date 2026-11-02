@@ -3,9 +3,9 @@
 import logging
 import os.path
 import threading
-from time import monotonic
 from collections.abc import Iterator
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING
 
 from sensai.util.logging import LogTime
@@ -56,6 +56,7 @@ class LanguageServerFactory:
             ignored_paths=self.ignored_patterns,
             trace_lsp_communication=self.trace_lsp_communication,
             encoding=self.encoding,
+            read_only=self.project_config.read_only,
         )
 
         log.info(f"Creating language server instance for {self.project_root}, language={ls_id}.")

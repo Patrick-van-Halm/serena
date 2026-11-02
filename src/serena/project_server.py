@@ -23,8 +23,8 @@ from serena.config.serena_config import LanguageBackend, SerenaConfig, project_r
 from serena.constants import SerenaPorts
 from serena.project_server_endpoint import ProjectServerEndpoint
 from serena.shared_mcp_calls import DuplicateToolCallError, SharedMCPCalls
-from serena.shared_mcp_recovery import DaemonRecovery, DaemonRecoveryRefusedError, RecoveryEvidence, RecoveryScope
 from serena.shared_mcp_protocol import SHARED_MCP_PROTOCOL_VERSION, shared_mcp_build_id
+from serena.shared_mcp_recovery import DaemonRecovery, DaemonRecoveryRefusedError, RecoveryEvidence, RecoveryScope
 from serena.util.tool_call import ToolCall, ToolCallBusyError, ToolCallContext, ToolCallInterrupted
 from serena.util.tool_result import ToolResult, ToolResultCodec
 
@@ -438,9 +438,7 @@ class ProjectServer:
                 # Project selection is owned by the bridge/router. Exposing activate_project would
                 # let one conversation retarget the shared agent underneath other conversations.
                 tool_names = [
-                    tool.get_name()
-                    for tool in runtime.agent.get_exposed_tool_instances()
-                    if tool.get_name() != "activate_project"
+                    tool.get_name() for tool in runtime.agent.get_exposed_tool_instances() if tool.get_name() != "activate_project"
                 ]
                 if req.session_id:
                     with self._mcp_runtimes_lock:
@@ -600,9 +598,7 @@ class ProjectServer:
             inactive = [
                 (key, runtime)
                 for key, runtime in self._mcp_runtimes.items()
-                if runtime.active_calls == 0
-                and not runtime.bridge_sessions
-                and not runtime.agent.get_current_tasks()
+                if runtime.active_calls == 0 and not runtime.bridge_sessions and not runtime.agent.get_current_tasks()
             ]
 
             # Time-based eviction.
@@ -617,9 +613,7 @@ class ProjectServer:
                     (
                         (key, runtime)
                         for key, runtime in self._mcp_runtimes.items()
-                        if runtime.active_calls == 0
-                        and not runtime.bridge_sessions
-                        and not runtime.agent.get_current_tasks()
+                        if runtime.active_calls == 0 and not runtime.bridge_sessions and not runtime.agent.get_current_tasks()
                     ),
                     key=lambda item: item[1].last_access,
                 )
@@ -691,7 +685,11 @@ class ProjectServer:
         agent = self._get_legacy_agent()
         with self._active_project_lock, agent.active_project_context(project):
             tool = agent.get_tool_by_name(req.tool_name)
-            if not tool.is_readonly():
+            if not tool.is_readonly() or (
+                req.tool_name
+                in {"get_diagnostics_for_file", "get_diagnostics_for_files", "get_diagnostics_for_symbol", "get_diagnostics_for_symbols"}
+                and project.diagnostics_modify_project()
+            ):
                 raise ValueError(f"Tool '{req.tool_name}' is not read-only and cannot be executed via the query_project route")
             params = json.loads(req.tool_params_json)
             return tool.apply_ex(**params)

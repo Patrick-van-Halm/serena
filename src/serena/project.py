@@ -145,6 +145,12 @@ class Project(ToStringMixin):
         else:
             return self.serena_config.determine_language_backend(self.project_config)
 
+    def diagnostics_modify_project(self) -> bool:
+        """Whether the configured language servers require writes for explicit diagnostic queries."""
+        return self.language_backend.is_lsp() and any(
+            ls_id.get_ls_class().diagnostics_modify_project() for ls_id in self.project_config.language_servers
+        )
+
     @classmethod
     def load(
         cls,

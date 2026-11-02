@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Project-scoped Unity CLI compilation and Console queries."""
 
-import json
 import os.path
-import shutil
 from typing import TYPE_CHECKING, Literal
 
 from serena.tools import UnityGetConsoleLogsTool, UnityGetStatusTool, UnityRecompileTool, UnityRunTestsTool
-from serena.util.shell import execute_shell_command
+from serena.util.unity_cli import UnityCli
 
 from ..facade import FacadeApi, facade_method
 from .shell_api import ShellCommandOutput, ShellCommandOutputRenderer
@@ -34,61 +32,20 @@ class UnityApi(FacadeApi):
         # require a selected Unity project before looking up or running an executable
         project = self._get_project()
         project.validate_relative_path(project_path)
-        unity_root = os.path.abspath(os.path.join(project.project_root, project_path))
-        if not os.path.isdir(os.path.join(unity_root, "Assets")) or not os.path.isfile(
-            os.path.join(unity_root, "ProjectSettings", "ProjectVersion.txt")
-        ):
-            raise ValueError(
-                f"Not a Unity project: {unity_root}. Expected Assets/ and ProjectSettings/ProjectVersion.txt. "
-                "For a nested Unity project, pass its directory in project_path."
-            )
-        if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
-            raise ValueError("timeout must be a positive whole number of seconds")
+        cli = UnityCli(project.project_root, project_path, unity_cli_path)
 
         # resolve test reports relative to the Unity root while enforcing the outer project's access policy
         if output_path is not None:
-            report_path = os.path.abspath(os.path.join(unity_root, output_path))
+            report_path = os.path.abspath(os.path.join(cli.project_root, output_path))
             project.validate_relative_path(report_path)
             if not output_path or os.path.isdir(report_path):
                 raise ValueError("output_path must name a test report file")
             args = [*args, "--output", report_path, "--report-format", "nunit"]
 
-        # resolve an explicit executable before changing the child process's working directory
-        cli_path = os.path.expanduser(unity_cli_path)
-        if os.path.dirname(cli_path) and not os.path.isabs(cli_path):
-            cli_path = os.path.join(project.project_root, cli_path)
-        executable = shutil.which(cli_path)
-        if executable is None:
-            raise FileNotFoundError(
-                f"Unity CLI executable not found: {unity_cli_path!r}. Install the official Unity CLI and add it to PATH, "
-                "or pass unity_cli_path. This is the 'unity' CLI, not the Unity Editor executable."
-            )
-
-        # target exactly this project and prevent prompts without involving shell parsing
-        if args[0] == "test":
-            command = [os.path.abspath(executable), "test", unity_root, *args[1:]]
-        else:
-            command = [os.path.abspath(executable), *args, "--project-path", unity_root]
-        command.extend(["--format", "json", "--non-interactive"])
-        process_timeout = min(float(timeout) + 1.0, max(float(self._agent.serena_config.tool_timeout) - 1.0, 0.1))
-        result = execute_shell_command(command, cwd=unity_root, capture_stderr=True, timeout=process_timeout)
-
-        # reject a missing CLI response rather than mistaking empty output for a clean compile
-        try:
-            response = json.loads(result.stdout)
-        except json.JSONDecodeError as error:
-            detail = (result.stderr or result.stdout).strip()[:500]
-            raise ValueError(
-                f"Unity CLI did not return valid JSON (exit code {result.return_code}). "
-                f"Use a current Unity CLI with JSON output support. {detail}"
-            ) from error
-        if not isinstance(response, dict) or not isinstance(response.get("success"), bool):
-            raise ValueError(
-                f"Unity CLI returned an invalid result envelope (exit code {result.return_code}); expected a JSON success flag."
-            )
-
         # retain the CLI's failure codes and diagnostics verbatim, including nonzero-exit responses
-        return ShellCommandOutput(result, ShellCommandOutputRenderer(self._agent, max_answer_chars))
+        process_timeout = max(float(self._agent.serena_config.tool_timeout) - 1.0, 0.1)
+        result = cli.run(args, timeout=timeout, process_timeout=process_timeout)
+        return ShellCommandOutput(result.command, ShellCommandOutputRenderer(self._agent, max_answer_chars))
 
     @facade_method(can_edit=True, corresponding_tool=UnityRecompileTool)
     def recompile(

@@ -1,23 +1,58 @@
-"""
-End-to-end test of querying an external project through the REPL: a project server executes the language server
-operations of the queried project, and the (pickled) results are usable in the querying agent's REPL.
-"""
+"""External-project permission checks and transfer of REPL results through the project server."""
 
 import socket
 import threading
 from collections.abc import Iterator
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from werkzeug.serving import make_server
 
 from serena.agent import SerenaAgent
-from serena.config.serena_config import SerenaConfig
+from serena.config.serena_config import ApiInclusionDefinition, LanguageBackend, ProjectConfig, SerenaConfig
+from serena.project import Project
 from serena.project_server import ProjectServer, ProjectServerClient
-from serena.repl.api.lsp_api import LspSymbolCollection
+from serena.repl.api.lsp_api import LspApi, LspSymbolCollection
+from serena.repl.external_project import ExternalProjectExecution
+from serena.repl.facade import ApiScope, Facade
 from serena.tools import SerenaReplTool
 from solidlsp.ls_config import LanguageServerId
 from test.conftest import language_server_tests_enabled
 from test.serena.test_serena_agent import serena_config  # noqa: F401  (fixture)
+
+
+@pytest.mark.parametrize("method_name", ["get_diagnostics_for_file", "get_diagnostics_for_symbol"])
+def test_read_only_external_context_blocks_unity_diagnostic_refresh(tmp_path: Path, method_name: str) -> None:
+    # use a real project configuration and facade metadata without starting a language server
+    project_config = ProjectConfig(project_name="unity-project", language_servers=[LanguageServerId.UNITY])
+    project = Project(
+        project_root=str(tmp_path),
+        project_config=project_config,
+        serena_config=SerenaConfig(gui_log_window=False, web_dashboard=False),
+    )
+    agent = MagicMock(spec=SerenaAgent)
+    agent.get_active_project_or_raise.return_value = project
+    agent.get_language_backend.return_value = LanguageBackend.LSP
+    scope = ApiScope()
+    scope.process(ApiInclusionDefinition(included_apis=[f"lsp.{method_name}"]))
+    facade = Facade.from_api(LspApi(agent), scope)
+    method = facade.get_method(method_name)
+    read_only = ExternalProjectExecution(project.project_name, read_only=True, agent=agent)
+
+    # compilation is refused in a read-only context while ordinary symbol queries remain available
+    with pytest.raises(PermissionError, match="Diagnostics.*read-only"):
+        read_only.check_call_permission(method)
+    read_only.check_call_permission(facade.get_method("find_symbol"))
+    ExternalProjectExecution(project.project_name, read_only=False, agent=agent).check_call_permission(method)
+
+    # ordinary C# diagnostics and the JetBrains backend do not require this compilation permission
+    project_config.language_servers = [LanguageServerId.CSHARP]
+    read_only.check_call_permission(method)
+    project_config.language_servers = [LanguageServerId.UNITY]
+    project_config.language_backend = LanguageBackend.JETBRAINS
+    agent.get_language_backend.return_value = LanguageBackend.JETBRAINS
+    read_only.check_call_permission(method)
 
 
 def _free_port() -> int:

@@ -335,21 +335,12 @@ class CSharpLanguageServer(SolidLanguageServer):
             self._dotnet_path, self._language_server_path = self._ensure_server_installed()
 
         def create_launch_command(self) -> list[str]:
-            # Find solution or project file
-            solution_or_project = find_solution_or_project_file(self._repository_root_path)
-
             # Create log directory
             log_dir = Path(self._ls_resources_dir) / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
 
             # Build command using dotnet directly
             cmd = [self._dotnet_path, self._language_server_path, "--logLevel=Information", f"--extensionLogDirectory={log_dir}", "--stdio"]
-
-            # The language server will discover the solution/project from the workspace root
-            if solution_or_project:
-                log.info(f"Found solution/project file: {solution_or_project}")
-            else:
-                log.warning("No .sln/.slnx or .csproj file found, language server will attempt auto-discovery")
 
             log.debug(f"Language server command: {' '.join(cmd)}")
 
@@ -727,28 +718,30 @@ class CSharpLanguageServer(SolidLanguageServer):
             )
             log.debug("Applied diagnostic capabilities hack for better C# diagnostics")
 
+    def _iter_solution_and_project_files(self) -> Iterable[str]:
+        """Files to consider when opening this server's solution and projects."""
+        return breadth_first_file_scan(self.repository_root_path)
+
     def _open_solution_and_projects(self) -> None:
         """
         Open solution and project files using notifications.
         """
-        # Find solution file (.sln or .slnx)
+        # discover the solution and projects within the backend's scope
         solution_file = None
-        for filename in breadth_first_file_scan(self.repository_root_path):
-            if filename.endswith((".sln", ".slnx")):
+        project_files = []
+        for filename in self._iter_solution_and_project_files():
+            if solution_file is None and filename.endswith((".sln", ".slnx")):
                 solution_file = filename
-                break
+            elif filename.endswith(".csproj"):
+                project_files.append(filename)
+        if solution_file is None and not project_files:
+            log.warning("No .sln/.slnx or .csproj file found, language server will attempt auto-discovery")
 
         # Send solution/open notification if solution file found
         if solution_file:
             solution_uri = PathUtils.path_to_uri(solution_file)
             self.server.notify.send_notification("solution/open", {"solution": solution_uri})
             log.debug(f"Opened solution file: {solution_file}")
-
-        # Find and open project files
-        project_files = []
-        for filename in breadth_first_file_scan(self.repository_root_path):
-            if filename.endswith(".csproj"):
-                project_files.append(filename)
 
         # Send project/open notifications for each project file
         if project_files:

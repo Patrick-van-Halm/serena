@@ -13,9 +13,9 @@ import pytest
 from serena.agent import SerenaAgent, ToolSet
 from serena.config.serena_config import ApiInclusionDefinition, ProjectConfig, SerenaConfig
 from serena.project import Project
-from serena.repl.api import unity_api
 from serena.repl.api.unity_api import UnityApi
 from serena.repl.facade import ApiScope
+from serena.util import unity_cli
 from serena.util.shell import ShellCommandResult
 
 
@@ -52,7 +52,7 @@ def cli(api: UnityApi, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
         cwd=str(Path(api._get_project().project_root) / "Game & tools"),
     )
     command = MagicMock(return_value=result)
-    monkeypatch.setattr(unity_api, "execute_shell_command", command)
+    monkeypatch.setattr(unity_cli, "execute_shell_command", command)
     monkeypatch.setattr(shutil, "which", lambda executable: sys.executable)
     return command
 
